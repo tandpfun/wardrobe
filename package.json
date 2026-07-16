@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:weather": "node scripts/test-weather-context.mjs",
     "preview": "vite preview",
     "check": "npm run build"
   },
