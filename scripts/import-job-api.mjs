@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import OpenAI from "openai";
 import sharp from "sharp";
 
 const API_ROOT = "/api/import/jobs";
@@ -76,7 +77,12 @@ function normalizeBoundingBox(value = {}) {
 }
 
 async function normalizeImage(bytes) {
-  return sharp(bytes).rotate().toColorspace("srgb").png().toBuffer();
+  return sharp(bytes)
+    .rotate()
+    .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
+    .toColorspace("srgb")
+    .png({ compressionLevel: 9 })
+    .toBuffer();
 }
 
 async function cropDetectedItem(bytes, boundingBox) {
@@ -296,30 +302,67 @@ function stageState() {
   return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
 }
 
-async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
-  const form = new FormData();
-  form.set("model", model);
-  form.set("prompt", prompt);
-  form.set("size", size);
-  form.set("quality", quality || "high");
-  form.set("output_format", "png");
-  if (background) form.set("background", background);
-  for (const [index, image] of images.entries()) {
-    const normalized = await normalizeImage(image.data);
-    form.append("image[]", new Blob([normalized], { type: "image/png" }), image.name?.replace(/\.[^.]+$/, ".png") || `image-${index + 1}.png`);
+async function openAIFetch(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (error) {
+    const cause = error.cause;
+    const detail = [cause?.code, cause?.message].filter(Boolean).join(": ");
+    throw new Error(detail ? `OpenAI request failed (${detail})` : `OpenAI request failed (${error.message})`, { cause: error });
   }
-  const response = await fetch(`${baseUrl}/images/edits`, {
-    method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form,
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error?.message || `OpenAI image request failed (${response.status})`);
-  const encoded = result.data?.[0]?.b64_json;
-  if (!encoded) throw new Error("OpenAI response did not contain image data");
+}
+
+async function openAIEdit({ key, baseUrl, responseModel, imageModel, prompt, images, size, background, quality }) {
+  const client = new OpenAI({ apiKey: key, baseURL: baseUrl, maxRetries: 2, timeout: 10 * 60 * 1000 });
+  const content = [{ type: "input_text", text: prompt }];
+  for (const image of images) {
+    const normalized = await normalizeImage(image.data);
+    content.push({ type: "input_image", image_url: `data:image/png;base64,${normalized.toString("base64")}` });
+  }
+  const request = {
+    model: responseModel,
+    background: true,
+    stream: true,
+    input: [{ role: "user", content }],
+    tool_choice: { type: "image_generation" },
+    tools: [{
+      type: "image_generation",
+      action: "edit",
+      model: imageModel,
+      size,
+      quality: quality || "high",
+      ...(background ? { background } : {}),
+    }],
+  };
+  let stream = await client.responses.create(request);
+  let responseId = null;
+  let cursor = 0;
+  let encoded = null;
+  let terminalError = null;
+  for (let connection = 0; connection < 4 && !encoded && !terminalError; connection += 1) {
+    try {
+      for await (const event of stream) {
+        if (Number.isFinite(event.sequence_number)) cursor = Math.max(cursor, event.sequence_number);
+        if (event.type === "response.created") responseId = event.response.id;
+        if (event.type === "response.output_item.done" && event.item.type === "image_generation_call") encoded = event.item.result;
+        if (event.type === "response.completed") {
+          encoded ||= event.response.output?.find((item) => item.type === "image_generation_call")?.result;
+          if (!encoded) terminalError = event.response.output_text?.trim() || "OpenAI response did not contain image data";
+        }
+        if (event.type === "response.failed") terminalError = event.response.error?.message || "OpenAI image request failed";
+      }
+    } catch (error) {
+      if (!responseId || connection === 3) throw error;
+      stream = await client.responses.retrieve(responseId, { stream: true, starting_after: cursor });
+    }
+  }
+  if (terminalError) throw new Error(terminalError);
+  if (!encoded) throw new Error("OpenAI image stream ended without image data");
   return Buffer.from(encoded, "base64");
 }
 
 async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
-  const response = await fetch(`${baseUrl}/responses`, {
+  const response = await openAIFetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -426,6 +469,7 @@ export function wardrobeImportApi(options = {}) {
     if (running.has(lock)) return running.get(lock);
     const task = (async () => {
       const current = await loadJob(job.id);
+      if (!current?.stages?.[stageName]) return;
       const stage = current.stages[stageName];
       stage.status = "processing"; stage.decision = null; stage.error = null; stage.attempts += 1; stage.updatedAt = new Date().toISOString();
       await saveJob(current);
@@ -442,7 +486,7 @@ export function wardrobeImportApi(options = {}) {
         if (stageName === "garment") {
           chromaKeyUsed = chooseChromaKey(current.metadata.color);
           const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), responseModel: setting("OPENAI_IMAGE_TOOL_MODEL", setting("OPENAI_VISION_MODEL", "gpt-5.4-mini")), imageModel: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
           const rawName = `${stageName}-${stage.attempts}-source.png`;
           await writeFile(path.join(dir, rawName), bytes);
           failedAssetUrl = `${ASSET_ROOT}/${current.id}/${rawName}`;
@@ -463,10 +507,11 @@ export function wardrobeImportApi(options = {}) {
           }
           const model = { data: modelData, mime: "image/png", name: "model.png" };
           const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), responseModel: setting("OPENAI_IMAGE_TOOL_MODEL", setting("OPENAI_VISION_MODEL", "gpt-5.4-mini")), imageModel: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
+        if (!fresh?.stages?.[stageName]) return;
         fresh.stages[stageName].status = "review";
         fresh.stages[stageName].assetUrl = `${ASSET_ROOT}/${fresh.id}/${path.basename(output)}`;
         fresh.stages[stageName].failedAssetUrl = null;
@@ -477,6 +522,7 @@ export function wardrobeImportApi(options = {}) {
         await saveJob(fresh);
       } catch (error) {
         const fresh = await loadJob(current.id);
+        if (!fresh?.stages?.[stageName]) return;
         fresh.stages[stageName].status = "failed"; fresh.stages[stageName].error = error.message; fresh.stages[stageName].updatedAt = new Date().toISOString();
         if (typeof failedAssetUrl === "string") fresh.stages[stageName].failedAssetUrl = failedAssetUrl;
         if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
