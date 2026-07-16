@@ -25,9 +25,9 @@ cp .env.example .env
 npm run dev
 ```
 
-Open [localhost:5173](http://localhost:5173). Without an API key, the complete approval flow runs in demo mode.
+⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env` and place a PNG reference photo of yourself at `data/model-reference.png`.
 
-For live imports, add `OPENAI_API_KEY` to `.env` and place a PNG model reference at `data/model-reference.png`.
+Open [localhost:5173](http://localhost:5173).
 
 ## What it does
 
@@ -41,7 +41,7 @@ For live imports, add `OPENAI_API_KEY` to `.env` and place a PNG model reference
 
 | Variable | Default |
 | --- | --- |
-| `OPENAI_API_KEY` | Demo mode when empty |
+| `OPENAI_API_KEY` | Required |
 | `OPENAI_VISION_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-2` |
 | `OPENAI_IMAGE_QUALITY` | `high` |

@@ -54,6 +54,7 @@
 .import-drop-target.is-over { background: rgba(255, 253, 247, 0.9); }
 .import-drop-target h2 { margin: 0; font: 500 clamp(24px, 4vw, 42px)/1.05 "Instrument Sans", sans-serif; letter-spacing: -0.035em; }
 .import-drop-target p { max-width: 40ch; margin: 0; color: var(--import-muted); font-size: 14px; }
+.import-setup-warning code { padding: 2px 5px; color: var(--import-ink); background: rgba(36, 35, 31, 0.07); border-radius: 4px; font-size: 0.92em; }
 
 /* Bottom-left launcher that expands from a compact pill into a tool tray. */
 .import-tray {

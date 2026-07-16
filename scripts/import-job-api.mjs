@@ -296,10 +296,6 @@ function stageState() {
   return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
 }
 
-function demoSvg(label, subtitle) {
-  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024" viewBox="0 0 1536 1024"><rect width="1536" height="1024" fill="#f4efe4"/><rect x="96" y="96" width="1344" height="832" rx="24" fill="#e5dccd" stroke="#b9aa94" stroke-width="3"/><text x="768" y="485" text-anchor="middle" font-family="sans-serif" font-size="56" fill="#302b25">${label}</text><text x="768" y="550" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#746b61">${subtitle}</text></svg>`);
-}
-
 async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
   const form = new FormData();
   form.set("model", model);
@@ -352,6 +348,24 @@ export function wardrobeImportApi(options = {}) {
   const running = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
+
+  async function setupStatus() {
+    const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
+    const referenceSetting = setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
+    const referencePath = path.resolve(root, referenceSetting);
+    let hasModelReference = false;
+    try {
+      hasModelReference = (await stat(referencePath)).isFile();
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    return {
+      ready: hasApiKey && hasModelReference,
+      hasApiKey,
+      hasModelReference,
+      modelReference: referenceSetting,
+    };
+  }
 
   async function loadJob(id) {
     if (!/^[a-f0-9-]{36}$/i.test(id)) return null;
@@ -420,43 +434,36 @@ export function wardrobeImportApi(options = {}) {
       try {
         const dir = path.join(jobsDir, current.id);
         const output = path.join(dir, `${stageName}-${stage.attempts}.png`);
-        const demo = current.mode === "demo";
+        const key = setting("OPENAI_API_KEY");
+        if (!key) throw new Error("OPENAI_API_KEY is not configured");
+        const sourceFile = stageName === "garment" && current.internal.cropFile ? current.internal.cropFile : current.internal.originalFile;
+        const original = { data: await readFile(path.join(dir, sourceFile)), mime: "image/png", name: sourceFile };
         let bytes;
-        if (demo && stageName === "garment") {
-          bytes = await readFile(path.join(dir, current.internal.cropFile || current.internal.originalFile));
-        } else if (demo) {
-          bytes = demoSvg("Modeled preview", "Demo mode — configure OPENAI_API_KEY for generation");
+        if (stageName === "garment") {
+          chromaKeyUsed = chooseChromaKey(current.metadata.color);
+          const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
+          const rawName = `${stageName}-${stage.attempts}-source.png`;
+          await writeFile(path.join(dir, rawName), bytes);
+          failedAssetUrl = `${ASSET_ROOT}/${current.id}/${rawName}`;
+          bytes = await removeChromaBackground(bytes, chromaKeyUsed);
         } else {
-          const key = setting("OPENAI_API_KEY");
-          if (!key) throw new Error("OPENAI_API_KEY is not configured");
-          const sourceFile = stageName === "garment" && current.internal.cropFile ? current.internal.cropFile : current.internal.originalFile;
-          const original = { data: await readFile(path.join(dir, sourceFile)), mime: "image/png", name: sourceFile };
-          if (stageName === "garment") {
-            chromaKeyUsed = chooseChromaKey(current.metadata.color);
-            const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
-            bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
-            const rawName = `${stageName}-${stage.attempts}-source.png`;
-            await writeFile(path.join(dir, rawName), bytes);
-            failedAssetUrl = `${ASSET_ROOT}/${current.id}/${rawName}`;
-            bytes = await removeChromaBackground(bytes, chromaKeyUsed);
-          } else {
-            const garmentName = current.stages.garment.assetUrl
-              ? path.basename(new URL(current.stages.garment.assetUrl, "http://localhost").pathname)
-              : `garment-${current.stages.garment.attempts}.png`;
-            const garmentFile = path.join(dir, garmentName);
-            const garment = { data: await readFile(garmentFile), mime: "image/png", name: "garment.png" };
-            const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
-            let modelData;
-            try {
-              modelData = await readFile(modelPath);
-            } catch (error) {
-              if (error.code === "ENOENT") throw new Error(`Model reference not found at ${modelPath}. Set WARDROBE_MODEL_REFERENCE or add data/model-reference.png.`);
-              throw error;
-            }
-            const model = { data: modelData, mime: "image/png", name: "model.png" };
-            const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
-            bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
+          const garmentName = current.stages.garment.assetUrl
+            ? path.basename(new URL(current.stages.garment.assetUrl, "http://localhost").pathname)
+            : `garment-${current.stages.garment.attempts}.png`;
+          const garmentFile = path.join(dir, garmentName);
+          const garment = { data: await readFile(garmentFile), mime: "image/png", name: "garment.png" };
+          const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
+          let modelData;
+          try {
+            modelData = await readFile(modelPath);
+          } catch (error) {
+            if (error.code === "ENOENT") throw new Error(`Model reference not found at ${modelPath}. Set WARDROBE_MODEL_REFERENCE or add data/model-reference.png.`);
+            throw error;
           }
+          const model = { data: modelData, mime: "image/png", name: "model.png" };
+          const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
@@ -486,6 +493,9 @@ export function wardrobeImportApi(options = {}) {
     try {
       if (url.pathname === "/api/import/wardrobe" && req.method === "GET") {
         return json(res, 200, await loadImported());
+      }
+      if (url.pathname === "/api/import/config" && req.method === "GET") {
+        return json(res, 200, await setupStatus());
       }
       const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
@@ -517,12 +527,19 @@ export function wardrobeImportApi(options = {}) {
         return res.end(await readFile(file));
       }
       if (url.pathname === API_ROOT && req.method === "POST") {
+        const setup = await setupStatus();
+        if (!setup.ready) {
+          const missing = [
+            !setup.hasApiKey && "OPENAI_API_KEY in .env",
+            !setup.hasModelReference && `a PNG photo of yourself at ${setup.modelReference}`,
+          ].filter(Boolean).join(" and ");
+          return json(res, 503, { error: `Setup required: add ${missing}, then restart the app.` });
+        }
         const input = await body(req);
         const image = decodeImage(input);
         const normalizedImage = await normalizeImage(image.data);
         const key = setting("OPENAI_API_KEY");
-        const demo = input.demo === true || !key;
-        const detected = (demo ? [input.metadata && typeof input.metadata === "object" ? input.metadata : {}] : await openAIAnalyze({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"), image: normalizedImage, mime: "image/png" })).map(normalizeMetadata);
+        const detected = (await openAIAnalyze({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"), image: normalizedImage, mime: "image/png" })).map(normalizeMetadata);
         const jobs = [];
         for (const metadata of detected) {
           const id = randomUUID();
@@ -534,7 +551,7 @@ export function wardrobeImportApi(options = {}) {
           await writeFile(path.join(dir, cropFile), croppedImage);
           const now = new Date().toISOString();
           const cropStage = { ...stageState(), status: "review", assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
-          const job = { id, status: "active", mode: demo ? "demo" : "live", metadata, stages: { crop: cropStage, garment: stageState(), modeled: stageState() }, createdAt: now, updatedAt: now, internal: { originalFile, cropFile, originalMime: "image/png" } };
+          const job = { id, status: "active", metadata, stages: { crop: cropStage, garment: stageState(), modeled: stageState() }, createdAt: now, updatedAt: now, internal: { originalFile, cropFile, originalMime: "image/png" } };
           job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
           await saveJob(job); jobs.push(publicJob(job));
         }
