@@ -321,7 +321,6 @@ async function openAIEdit({ key, baseUrl, responseModel, imageModel, prompt, ima
   }
   const request = {
     model: responseModel,
-    background: true,
     stream: true,
     input: [{ role: "user", content }],
     tool_choice: { type: "image_generation" },
@@ -353,6 +352,10 @@ async function openAIEdit({ key, baseUrl, responseModel, imageModel, prompt, ima
       }
     } catch (error) {
       if (!responseId || connection === 3) throw error;
+      stream = await client.responses.retrieve(responseId, { stream: true, starting_after: cursor });
+      continue;
+    }
+    if (!encoded && !terminalError && responseId) {
       stream = await client.responses.retrieve(responseId, { stream: true, starting_after: cursor });
     }
   }
