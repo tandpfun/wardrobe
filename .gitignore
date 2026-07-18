@@ -6,3 +6,4 @@ dist/
 !.env.example
 *.log
 data/
+.temp/

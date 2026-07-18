@@ -65,8 +65,6 @@ button { font: inherit; }
   flex-wrap: nowrap;
   gap: 0;
   margin: 48px 0 0;
-  border: 0;
-  border-radius: 0;
   padding: 0;
   overflow-x: auto;
   background: transparent;
@@ -76,6 +74,7 @@ button { font: inherit; }
 
 .category-nav::-webkit-scrollbar { display: none; }
 
+/* 前 6 个 tab：连成一条连续条（共享上下边线 + 相邻竖线，无间隔） */
 .category-nav button {
   position: relative;
   flex: 0 0 auto;
@@ -97,10 +96,6 @@ button { font: inherit; }
 
 .category-nav button:first-child { border-left: 1px solid var(--line); }
 .category-nav button + button { border-left: 1px solid var(--line); }
-.category-nav button:last-child { border-right: 1px solid var(--line); }
-.category-nav button:last-child {
-  border-right: 1px solid var(--line);
-}
 
 .category-nav button::after {
   content: none;
@@ -120,11 +115,28 @@ button { font: inherit; }
   outline-offset: 2px;
 }
 
+/* OUTFITS tab：与前6个形状完全一致（直角），仅用左边距与前6个连续条分开 */
+.category-nav button.outfits-tab {
+  margin-left: 14px;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+/* 连续条在 SHOES 处封右口（OUTFITS 独立后 SHOES 不再是 last-child） */
+.category-nav button:nth-last-child(2) {
+  border-right: 1px solid var(--line);
+}
+
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(165px, 1fr));
   gap: 22px 26px;
   padding: 43px 52px 70px;
+}
+
+/* Outfit 网格：4 列宽卡、间距更大（仿作者 All=7列 / Outfit=4列） */
+.outfit-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 22px 24px;
 }
 
 .gallery-item {
@@ -910,5 +922,435 @@ button { font: inherit; }
   .viewer.shake {
     animation: none;
     box-shadow: inset 3px 0 0 var(--accent), -18px 0 50px rgba(25, 24, 22, .08);
+  }
+}
+
+/* ── Outfit Gallery ── */
+
+.outfit-gallery-item {
+  position: relative;
+  display: block;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: zoom-in;
+  border-radius: 0;
+  overflow: hidden;
+  aspect-ratio: 1;
+}
+
+.outfit-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 0;
+  transition: opacity .35s ease, filter .35s ease;
+}
+
+.outfit-garments-overlay {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity .35s ease;
+  pointer-events: none;
+}
+
+.outfit-garment-cutout {
+  position: absolute;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 3px 12px rgba(0, 0, 0, .16));
+  opacity: 0;
+  transform: scale(.9) rotate(var(--rot, 0deg));
+  transition: opacity .35s ease, transform .4s cubic-bezier(.34, 1.4, .64, 1);
+}
+
+.outfit-gallery-item:hover .outfit-photo {
+  opacity: .12;
+  filter: saturate(.6);
+}
+
+.outfit-gallery-item:hover .outfit-garments-overlay {
+  opacity: 1;
+}
+
+.outfit-gallery-item:hover .outfit-garment-cutout {
+  opacity: 1;
+  transform: scale(1) rotate(var(--rot, 0deg));
+}
+
+.outfit-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, .03);
+  border: 1px dashed var(--line);
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.outfit-placeholder.large {
+  min-height: 320px;
+  font-size: 15px;
+}
+
+.outfit-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(0, 0, 0, .12);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: outfit-spin .8s linear infinite;
+}
+
+.outfit-placeholder.large .outfit-spinner {
+  width: 40px;
+  height: 40px;
+  border-width: 4px;
+}
+
+@keyframes outfit-spin {
+  to { transform: rotate(360deg); }
+}
+
+.outfit-error-icon {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.outfit-error-detail {
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 260px;
+  text-align: center;
+  word-break: break-word;
+}
+
+/* ── Outfit Viewer (looks drawer, 仿作者) ── */
+
+.outfit-viewer {
+  max-width: 480px;
+}
+
+.outfit-look-number {
+  flex: 0 0 auto;
+  padding-right: 62px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.outfit-viewer-pieces {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 8px 8% 18px;
+}
+
+.outfit-viewer-piece {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  justify-content: center;
+  transform: translateX(var(--piece-x, 0)) translateY(var(--piece-y, 0)) rotate(var(--piece-rot, 0deg));
+  transition: transform 320ms cubic-bezier(.34, 1.3, .64, 1);
+}
+
+/* Subsequent pieces sit smaller + small gap (not overlap) → breathing room,
+   loose flat-lay without crushing the previous piece. */
+.outfit-viewer-piece + .outfit-viewer-piece {
+  max-width: 320px;
+  margin-top: 6px;
+}
+
+.outfit-viewer-piece img,
+.outfit-viewer-piece .optimized-image {
+  width: auto;
+  max-width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, .08));
+}
+
+.outfit-viewer-details {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.outfit-viewer-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 0 4px;
+}
+
+.outfit-viewer-name {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.outfit-viewer-description {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", "Apple Garamond", "Times New Roman", serif;
+  font-size: 14px;
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.outfit-viewer-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.outfit-viewer-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: rgba(25, 25, 25, .025);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.outfit-viewer-actions {
+  margin-top: 18px;
+  gap: 6px;
+}
+
+.viewer-quiet-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.viewer-quiet-button:hover,
+.viewer-quiet-button:focus-visible {
+  background: rgba(25, 25, 25, .05);
+  border-color: var(--line);
+  color: var(--ink);
+  outline: none;
+}
+
+/* ── Outfit Pieces ── */
+
+.outfit-pieces h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+
+.outfit-pieces-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 8px;
+}
+
+.outfit-piece {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: rgba(0, 0, 0, .01);
+}
+
+.outfit-piece img,
+.outfit-piece .optimized-image {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+
+.outfit-piece span {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+/* ── Outfit Creator ── */
+
+.outfit-creator {
+  max-width: 600px;
+}
+
+.outfit-creator-info {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.outfit-creator-info small {
+  font-size: 11px;
+}
+
+.outfit-creator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.outfit-creator-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 2px solid transparent;
+  border-radius: 0;
+  background: rgba(0, 0, 0, .02);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+
+.outfit-creator-item.selected {
+  border-color: var(--accent);
+  background: rgba(110, 48, 46, .04);
+}
+
+.outfit-creator-item img,
+.outfit-creator-item .optimized-image {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+}
+
+.outfit-creator-item-name {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.outfit-creator-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+/* ── Outfit FAB ── */
+
+.outfit-fab {
+  position: fixed;
+  bottom: 18px;
+  left: 18px;
+  width: 50px;
+  height: 50px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+  background: var(--import-ink);
+  color: var(--import-paper);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 28px rgba(25, 23, 18, 0.2);
+  z-index: 100;
+  transition: box-shadow 220ms ease;
+}
+
+.outfit-fab:hover,
+.outfit-fab:focus-visible {
+  box-shadow: 0 12px 36px rgba(25, 23, 18, 0.26);
+  outline: none;
+}
+
+.outfit-fab:active {
+  transform: scale(0.94);
+}
+
+.outfit-fab:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* ── Responsive ── */
+
+@media (max-width: 520px) {
+  .outfit-pieces-grid {
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  }
+
+  .outfit-creator-grid {
+    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .outfit-fab {
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: 12px;
+    width: 50px;
+    height: 50px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .outfit-photo,
+  .outfit-garments-overlay,
+  .outfit-garment-cutout,
+  .outfit-spinner,
+  .outfit-fab { transition: none; animation: none; }
+  .outfit-spinner {
+    border-top-color: transparent;
+    border-right-color: var(--accent);
   }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Trash, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Check, CoatHanger, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 
@@ -13,6 +13,7 @@ const TYPES = [
   { id: "lowerbody", label: "Bottoms", singular: "Bottom" },
   { id: "accessories_up", label: "Accessories", singular: "Accessory" },
   { id: "shoes", label: "Shoes", singular: "Shoes" },
+  { id: "outfits", label: "Outfits" },
 ];
 
 const TYPE_MAP = Object.fromEntries(TYPES.map((type) => [type.id, type]));
@@ -532,12 +533,372 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   );
 }
 
+const OUTFIT_SLOTS = {
+  // tops: alternate left/right across the top of the card
+  upperbody: [
+    { top: "4%", left: "5%", maxH: "56%", maxW: "44%", rot: -5 },
+    { top: "4%", right: "5%", maxH: "56%", maxW: "44%", rot: 5 },
+  ],
+  wholebody_up: [
+    { top: "4%", left: "5%", maxH: "56%", maxW: "44%", rot: -5 },
+    { top: "4%", right: "5%", maxH: "56%", maxW: "44%", rot: 5 },
+  ],
+  // bottoms: alternate right/left across the bottom (taller, keep natural proportion)
+  lowerbody: [
+    { bottom: "3%", right: "5%", maxH: "58%", maxW: "44%", rot: 5 },
+    { bottom: "3%", left: "5%", maxH: "58%", maxW: "44%", rot: -5 },
+  ],
+  // shoes: bottom-left, smaller
+  shoes: [
+    { bottom: "6%", left: "10%", maxH: "26%", maxW: "34%", rot: -3 },
+    { bottom: "6%", right: "10%", maxH: "26%", maxW: "34%", rot: 3 },
+  ],
+  // accessories: top-right, smaller
+  accessories_up: [
+    { top: "6%", right: "7%", maxH: "30%", maxW: "32%", rot: 6 },
+    { top: "6%", left: "7%", maxH: "30%", maxW: "32%", rot: -6 },
+  ],
+};
+
+function slotForGarment(part, indexAmongPart) {
+  const slots = OUTFIT_SLOTS[part] || OUTFIT_SLOTS.upperbody;
+  return slots[indexAmongPart % slots.length];
+}
+
+// When more pieces of a part exist than predefined slots (3+ tops, etc.),
+// apply a deterministic pseudo-random jitter on top of the base slot so the
+// overflow pieces don't land on exactly the same spot as piece 0/1.
+// Same outfit+garment → same jitter every render (no flicker on re-render).
+function jitteredSlot(part, indexAmongPart, outfitId, garmentId) {
+  const base = slotForGarment(part, indexAmongPart);
+  const slots = OUTFIT_SLOTS[part] || OUTFIT_SLOTS.upperbody;
+  // Only jitter when we're past the predefined slot count.
+  if (indexAmongPart < slots.length) return base;
+
+  const r1 = hash01(`${outfitId}:${garmentId}:jx`);
+  const r2 = hash01(`${outfitId}:${garmentId}:jy`);
+  const r3 = hash01(`${outfitId}:${garmentId}:jr`);
+
+  const clone = { ...base };
+  // Shift ±3%..±8% horizontally, ±2.5%..±5% vertically, ±3°..±6° rotation.
+  const dx = (r1 - 0.5) * 16; // -8..+8
+  const dy = (r2 - 0.5) * 10; // -5..+5
+  const dr = (r3 - 0.5) * 12; // -6..+6 deg
+
+  if (clone.top != null) clone.top = `${parseFloat(clone.top) + dy}%`;
+  if (clone.bottom != null) clone.bottom = `${parseFloat(clone.bottom) - dy}%`;
+  if (clone.left != null) clone.left = `${parseFloat(clone.left) + dx}%`;
+  if (clone.right != null) clone.right = `${parseFloat(clone.right) - dx}%`;
+  clone.rot = (clone.rot || 0) + dr;
+  // Make overflow pieces slightly smaller so they read as "secondary".
+  clone.maxH = `${parseFloat(clone.maxH) * 0.8}%`;
+  clone.maxW = `${parseFloat(clone.maxW) * 0.8}%`;
+  return clone;
+}
+
+// Deterministic hash → [0,1). Used to scatter garment pieces in the viewer
+// with a stable flat-lay feel (same outfit → same scatter every open).
+function hash01(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+// Returns { xPct, rotDeg, yPct } for piece at `index` in outfit `outfitId`.
+// Outward tilt + zig-zag drift + small overlap → loose flat-lay that
+// "opens outward" (top leans left, bottom leans right, etc.) instead of
+// collapsing toward center.
+function pieceScatter(outfitId, garmentId, index) {
+  const r1 = hash01(`${outfitId}:${garmentId}:x`);
+  const r2 = hash01(`${outfitId}:${garmentId}:r`);
+  const r3 = hash01(`${outfitId}:${garmentId}:y`);
+  const side = index % 2 === 0 ? 1 : -1; // even → right, odd → left
+  const xPct = side * (8 + r1 * 7);      // ±8%..±15%
+  // Outward rotation: even (right side) tilts clockwise (+), odd (left side) tilts CCW (−).
+  // Mirror the x sign so each piece leans AWAY from the centerline.
+  const rotDeg = side * (3 + r2 * 4);    // ±3°..±7°, tilting outward
+  const yPct = index === 0 ? 0 : -(4 + r3 * 6); // subsequent pieces overlap upward 4%..10%
+  return { xPct, rotDeg, yPct };
+}
+
+function OutfitGalleryItem({ outfit, onOpen }) {
+  const garments = outfit.garments || [];
+  const partCounts = {};
+
+  return (
+    <button
+      className="outfit-gallery-item"
+      type="button"
+      onClick={() => onOpen(outfit.id)}
+      aria-label={`View outfit ${outfit.name}`}
+    >
+      {outfit.status === "ready" && outfit.image ? (
+        <>
+          <img className="outfit-photo" src={outfit.image} alt={outfit.name} />
+          {garments.length > 0 && (
+            <div className="outfit-garments-overlay">
+              {garments.map((garment) => {
+                const part = garment.part || "upperbody";
+                const idx = (partCounts[part] = (partCounts[part] || 0) + 1) - 1;
+                const slot = jitteredSlot(part, idx, outfit.id, garment.id);
+                const style = {
+                  "--rot": `${slot.rot}deg`,
+                  maxHeight: slot.maxH,
+                  maxWidth: slot.maxW,
+                };
+                if (slot.top != null) style.top = slot.top;
+                if (slot.bottom != null) style.bottom = slot.bottom;
+                if (slot.left != null) style.left = slot.left;
+                if (slot.right != null) style.right = slot.right;
+                return (
+                  <img
+                    key={garment.id}
+                    className="outfit-garment-cutout"
+                    src={garment.thumbnail || garment.image}
+                    alt=""
+                    style={style}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="outfit-placeholder">
+          {outfit.status === "generating" ? (
+            <>
+              <div className="outfit-spinner" />
+              <span>Generating</span>
+            </>
+          ) : outfit.status === "failed" ? (
+            <span className="outfit-error-icon">Failed</span>
+          ) : outfit.status === "stalled" ? (
+            <span className="outfit-error-icon">Interrupted</span>
+          ) : (
+            <CoatHanger size={32} weight="light" aria-hidden="true" />
+          )}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate }) {
+  const closeButtonRef = useRef(null);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.body.classList.add("viewer-open");
+    closeButtonRef.current?.focus({ preventScroll: true });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.classList.remove("viewer-open");
+    };
+  }, [onClose]);
+
+  const garments = outfit.garments || [];
+  const lookLabel = Number.isInteger(lookNumber) && lookNumber > 0
+    ? `LOOK ${String(lookNumber).padStart(2, "0")}`
+    : null;
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer outfit-viewer" role="dialog" aria-modal="true" aria-label={`Outfit ${outfit.name}`}>
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close viewer" ref={closeButtonRef}>
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+
+          {lookLabel && <div className="outfit-look-number">{lookLabel}</div>}
+
+          <div className="outfit-viewer-pieces">
+            {garments.length > 0 ? (
+              garments.map((garment, idx) => {
+                const { xPct, rotDeg, yPct } = pieceScatter(outfit.id, garment.id, idx);
+                return (
+                  <div
+                    className="outfit-viewer-piece"
+                    key={garment.id}
+                    style={{
+                      "--piece-x": `${xPct}%`,
+                      "--piece-rot": `${rotDeg}deg`,
+                      "--piece-y": `${yPct}%`,
+                    }}
+                  >
+                    <OptimizedImage
+                      src={garment.thumbnail || garment.image}
+                      alt={garment.name}
+                      sizes="(max-width: 860px) 100vw, 440px"
+                      breakpoints={[200, 320, 440, 560]}
+                      quality={88}
+                    />
+                  </div>
+                );
+              })
+            ) : (
+              <div className="outfit-placeholder large">
+                <CoatHanger size={48} weight="light" aria-hidden="true" />
+              </div>
+            )}
+          </div>
+
+          <div className="viewer-details outfit-viewer-details">
+            <div className="outfit-viewer-meta">
+              <h2 className="outfit-viewer-name">{outfit.name}</h2>
+              {outfit.description && <p className="outfit-viewer-description">{outfit.description}</p>}
+              {Array.isArray(outfit.tags) && outfit.tags.length > 0 && (
+                <div className="outfit-viewer-tags">
+                  {outfit.tags.map((tag) => (
+                    <span className="outfit-viewer-tag" key={tag}>{tag}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="viewer-actions outfit-viewer-actions">
+              <button className="viewer-quiet-button" type="button" onClick={() => onDelete(outfit.id)} aria-label="Delete outfit">
+                <Trash size={15} weight="regular" aria-hidden="true" />
+              </button>
+              {outfit.status === "ready" && (
+                <button className="viewer-quiet-button" type="button" onClick={() => onRegenerate(outfit.id)} aria-label="Regenerate outfit">
+                  <ArrowsClockwise size={15} weight="regular" aria-hidden="true" />
+                </button>
+              )}
+              {outfit.status === "failed" && (
+                <button className="secondary-button" type="button" onClick={() => onRegenerate(outfit.id)}>
+                  <ArrowsClockwise size={15} weight="bold" aria-hidden="true" /> Retry
+                </button>
+              )}
+              {outfit.status === "stalled" && (
+                <button className="secondary-button" type="button" onClick={() => onRegenerate(outfit.id)}>
+                  <ArrowsClockwise size={15} weight="bold" aria-hidden="true" /> Retry
+                </button>
+              )}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function OutfitCreator({ items, onCancel, onCreate }) {
+  const [name, setName] = useState("");
+  const [selected, setSelected] = useState([]);
+
+  const toggle = (id) => {
+    setSelected((current) =>
+      current.includes(id)
+        ? current.filter((s) => s !== id)
+        : current.length >= 6
+          ? current
+          : [...current, id]
+    );
+  };
+
+  const canCreate = selected.length >= 2;
+
+  const handleSubmit = () => {
+    if (!canCreate) return;
+    onCreate({ name: name.trim() || "New Outfit", garmentIds: selected });
+  };
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <div className="viewer-entry">
+        <aside className="viewer outfit-creator" role="dialog" aria-modal="true" aria-label="Create outfit">
+          <button className="viewer-icon-close" type="button" onClick={onCancel} aria-label="Close">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+
+          <div className="viewer-heading">
+            <div>
+              <h2>Create Outfit</h2>
+            </div>
+          </div>
+
+          <div className="viewer-details">
+            <label className="field">
+              <span>Outfit name</span>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="e.g. Weekend Casual"
+                onKeyDown={(event) => event.key === "Enter" && canCreate && handleSubmit()}
+              />
+            </label>
+
+            <div className="outfit-creator-info">
+              <span>Selected: {selected.length}/6</span>
+              <small>Pick 2-6 pieces to compose a look</small>
+            </div>
+
+            <div className="outfit-creator-grid">
+              {items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`outfit-creator-item${selected.includes(item.id) ? " selected" : ""}`}
+                  onClick={() => toggle(item.id)}
+                  aria-pressed={selected.includes(item.id)}
+                >
+                  <OptimizedImage
+                    src={item.thumbnail || item.image}
+                    alt={item.name}
+                    sizes="100px"
+                    breakpoints={[80, 120]}
+                  />
+                  <span className="outfit-creator-item-name">{item.name}</span>
+                  {selected.includes(item.id) && (
+                    <span className="outfit-creator-check">
+                      <Check size={14} weight="bold" aria-hidden="true" />
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <div className="viewer-actions">
+              <span className="action-spacer" />
+              <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={handleSubmit}
+                disabled={!canCreate}
+              >
+                <Plus size={15} weight="bold" aria-hidden="true" /> Generate
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [items, setItems] = useState([]);
-  const [activeType, setActiveType] = useState("all");
+  const [activeType, setActiveType] = useState(() => {
+    if (typeof window === "undefined") return "all";
+    const hash = window.location.hash.slice(1);
+    return TYPES.some((t) => t.id === hash) ? hash : "all";
+  });
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // Outfit state
+  const [outfits, setOutfits] = useState([]);
+  const [outfitsLoading, setOutfitsLoading] = useState(false);
+  const [selectedOutfitId, setSelectedOutfitId] = useState(null);
+  const [showCreator, setShowCreator] = useState(false);
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -571,6 +932,7 @@ export function App() {
   const chooseType = (typeId) => {
     setActiveType(typeId);
     setSelectedId(null);
+    if (typeof window !== "undefined") window.location.hash = typeId;
   };
 
   const saveItem = (updatedItem) => {
@@ -603,19 +965,106 @@ export function App() {
     setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
   }, []);
 
+  // ── Outfit logic ──
+
+  const loadOutfits = useCallback(async () => {
+    setOutfitsLoading(true);
+    try {
+      const response = await fetch("/api/import/outfits", { cache: "no-store" });
+      if (!response.ok) throw new Error("Could not load outfits.");
+      const data = await response.json();
+      setOutfits(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOutfitsLoading(false);
+    }
+  }, []);
+
+  // Load outfits when switching to outfits tab
+  useEffect(() => {
+    if (activeType === "outfits" && outfits.length === 0 && !outfitsLoading) {
+      loadOutfits();
+    }
+  }, [activeType, outfits.length, outfitsLoading, loadOutfits]);
+
+  // Poll for generating outfits. Depend only on the boolean (not the whole
+  // outfits array) so the interval isn't torn down + recreated every poll.
+  const hasGeneratingOutfit = outfits.some((o) => o.status === "generating");
+  useEffect(() => {
+    if (activeType !== "outfits" || !hasGeneratingOutfit) return;
+    const interval = setInterval(() => {
+      fetch("/api/import/outfits", { cache: "no-store" })
+        .then((r) => r.ok ? r.json() : [])
+        .then((data) => setOutfits(data))
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [activeType, hasGeneratingOutfit]);
+
+  const createOutfit = async ({ name, garmentIds }) => {
+    setShowCreator(false);
+    try {
+      const response = await fetch("/api/import/outfits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, garmentIds }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || "Could not create outfit");
+      }
+      const newOutfit = await response.json();
+      setOutfits((current) => [...current, newOutfit]);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const deleteOutfit = async (id) => {
+    try {
+      const response = await fetch(`/api/import/outfits/${id}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) throw new Error("Could not delete outfit.");
+    } catch (err) {
+      setError(err.message);
+      return;
+    }
+    setOutfits((current) => current.filter((o) => o.id !== id));
+    setSelectedOutfitId(null);
+  };
+
+  const regenerateOutfit = async (id) => {
+    try {
+      const response = await fetch(`/api/import/outfits/${id}/regenerate`, { method: "POST" });
+      if (!response.ok) throw new Error("Could not regenerate outfit.");
+      const updated = await response.json();
+      setOutfits((current) => current.map((o) => o.id === id ? { ...updated, garments: o.garments } : o));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const selectedOutfit = outfits.find((o) => o.id === selectedOutfitId) || null;
+
+  const isOutfitsView = activeType === "outfits";
+
   return (
-    <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
+    <div className={`app-shell${selectedItem || selectedOutfit ? " has-selection" : ""}`}>
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>
+            <p className="piece-count">
+              {isOutfitsView
+                ? `${outfits.length} ${outfits.length === 1 ? "outfit" : "outfits"}`
+                : `${items.length} ${items.length === 1 ? "piece" : "pieces"}`}
+            </p>
           </div>
           <nav className="category-nav" aria-label="Filter wardrobe by item type">
             {TYPES.map((type) => (
               <button
                 key={type.id}
                 type="button"
-                className={activeType === type.id ? "active" : ""}
+                className={`${activeType === type.id ? "active" : ""}${type.id === "outfits" ? " outfits-tab" : ""}`}
                 onClick={() => chooseType(type.id)}
                 aria-pressed={activeType === type.id}
               >
@@ -626,25 +1075,82 @@ export function App() {
         </header>
 
         {error && <p className="status error">{error}</p>}
-        {!error && loading && <p className="status">Loading wardrobe</p>}
-        {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
 
-        {!!items.length && (
-          <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
-            {visibleItems.map((item) => (
-              <GalleryItem
-                key={item.id}
-                item={item}
-                selected={selectedId === item.id}
-                onOpen={setSelectedId}
-              />
-            ))}
-          </section>
+        {isOutfitsView ? (
+          <>
+            {!error && outfitsLoading && <p className="status">Loading outfits</p>}
+            {!error && !outfitsLoading && !outfits.length && (
+              <p className="status empty">No outfits yet. Tap + to compose a look.</p>
+            )}
+
+            {!!outfits.length && (
+              <section className="gallery-grid outfit-grid" aria-label="Outfit gallery">
+                {outfits.map((outfit) => (
+                  <OutfitGalleryItem
+                    key={outfit.id}
+                    outfit={outfit}
+                    onOpen={setSelectedOutfitId}
+                  />
+                ))}
+              </section>
+            )}
+          </>
+        ) : (
+          <>
+            {!error && loading && <p className="status">Loading wardrobe</p>}
+            {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+
+            {!!items.length && (
+              <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
+                {visibleItems.map((item) => (
+                  <GalleryItem
+                    key={item.id}
+                    item={item}
+                    selected={selectedId === item.id}
+                    onOpen={setSelectedId}
+                  />
+                ))}
+              </section>
+            )}
+          </>
         )}
       </main>
 
       {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
-      <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
+      {selectedOutfit && (
+        <OutfitViewer
+          outfit={selectedOutfit}
+          lookNumber={
+            [...outfits]
+              .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))
+              .findIndex((o) => o.id === selectedOutfit.id) + 1
+          }
+          onClose={() => setSelectedOutfitId(null)}
+          onDelete={deleteOutfit}
+          onRegenerate={regenerateOutfit}
+        />
+      )}
+      {showCreator && (
+        <OutfitCreator
+          items={items}
+          onCancel={() => setShowCreator(false)}
+          onCreate={createOutfit}
+        />
+      )}
+
+      {isOutfitsView ? (
+        <button
+          className="outfit-fab"
+          type="button"
+          onClick={() => setShowCreator(true)}
+          disabled={items.length < 2}
+          aria-label="Create new outfit"
+        >
+          <Plus size={19} aria-hidden="true" />
+        </button>
+      ) : (
+        <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
+      )}
     </div>
   );
 }
