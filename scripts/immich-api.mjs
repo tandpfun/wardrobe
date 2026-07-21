@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
@@ -123,7 +123,7 @@ export function immichApi(options = {}) {
       ? `/api/assets/${id}/thumbnail?size=thumbnail`
       : `/api/assets/${id}/original`;
     const response = await request(endpoint);
-    const bytes = await limitedBytes(response, variant === "thumbnail" ? 10 * 1024 * 1024 : 64 * 1024 * 1024);
+    const bytes = await limitedBytes(response, variant === "thumbnail" ? 10 * 1024 * 1024 : 18 * 1024 * 1024);
     res.statusCode = 200;
     res.setHeader("Content-Type", response.headers.get("content-type") || "image/jpeg");
     res.setHeader("Content-Length", String(bytes.length));
@@ -163,6 +163,7 @@ export function immichApi(options = {}) {
           .toColorspace("srgb")
           .png({ compressionLevel: 9 })
           .toBuffer();
+        await mkdir(path.dirname(referencePath()), { recursive: true, mode: 0o700 });
         await writeFile(referencePath(), normalized, { mode: 0o600 });
         return json(res, 200, { saved: true, modelReference: referencePath() });
       }

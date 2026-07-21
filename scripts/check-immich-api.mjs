@@ -35,7 +35,7 @@ const fakeImmich = createServer(async (req, res) => {
   }
   if (req.url === `/api/assets/${oversizedId}/original`) {
     res.setHeader("content-type", "image/jpeg");
-    res.setHeader("content-length", String(65 * 1024 * 1024));
+    res.setHeader("content-length", String(19 * 1024 * 1024));
     return res.end();
   }
   if (req.url === `/api/assets/${assetId}/thumbnail?size=thumbnail` || req.url === `/api/assets/${assetId}/original`) {
@@ -48,7 +48,7 @@ const fakeImmich = createServer(async (req, res) => {
 
 const directory = await mkdtemp(path.join(tmpdir(), "wardrobe-immich-test-"));
 const keyFile = path.join(directory, "api-key");
-const referenceFile = path.join(directory, "model-reference.png");
+const referenceFile = path.join(directory, "references", "model-reference.png");
 await writeFile(keyFile, `${secret}\n`, { mode: 0o600 });
 
 let app;
