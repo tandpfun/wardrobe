@@ -25,7 +25,7 @@ cp .env.example .env
 npm run dev
 ```
 
-⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env` and place a PNG reference photo of yourself at `data/model-reference.png`.
+⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env` and either place a PNG reference photo at `data/model-reference.png` or choose one through an optional Immich connection.
 
 Open [localhost:5173](http://localhost:5173).
 
@@ -53,6 +53,7 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 - Extracts clean product cutouts with the OpenAI Images API
 - Generates an optional modeled editorial preview
 - Keeps originals, jobs, generated images, and the JSON database local in `data/`
+- Optionally browses a rolling date window from Immich with smart search and explicit, bounded selection
 - Supports drag, drop, paste, editing, review, regeneration, and approval
 
 ## Configuration
@@ -60,11 +61,24 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 | Variable | Default |
 | --- | --- |
 | `OPENAI_API_KEY` | Required |
+| `OPENAI_API_BASE_URL` | `https://api.openai.com/v1` |
 | `OPENAI_VISION_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-2` |
 | `OPENAI_IMAGE_QUALITY` | `high` |
+| `OPENAI_OMIT_IMAGE_OUTPUT_FORMAT` | `false` |
+| `IMMICH_BASE_URL` | Optional; for example `https://photos.example.com` |
+| `IMMICH_API_KEY_FILE` | `.secrets/immich-api-key` |
+| `IMMICH_YEARS` | `4` |
 | `WARDROBE_MODEL_REFERENCE` | `data/model-reference.png` |
 | `WARDROBE_DATA_DIR` | `data` |
+
+### Immich photo picker
+
+Create a dedicated Immich API key with only `asset.read`, `asset.view`, and `asset.download`, save the raw key in the gitignored path configured by `IMMICH_API_KEY_FILE`, and set `IMMICH_BASE_URL`. Wardrobe then offers smart search and recent browsing over a rolling `IMMICH_YEARS` window.
+
+The integration does not bulk-process the library. It proxies thumbnails on demand, stores only the reference portrait you explicitly choose, and limits outfit imports to five selected photos per batch. Immich originals are never modified.
+
+Wardrobe itself does not provide user authentication. Keep it on localhost or a trusted network, or place it behind an authenticated reverse proxy before exposing the Immich picker to other networks.
 
 ## License
 

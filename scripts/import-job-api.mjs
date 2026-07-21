@@ -296,13 +296,13 @@ function stageState() {
   return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
 }
 
-async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
+async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality, omitOutputFormat = false }) {
   const form = new FormData();
   form.set("model", model);
   form.set("prompt", prompt);
   form.set("size", size);
   form.set("quality", quality || "high");
-  form.set("output_format", "png");
+  if (!omitOutputFormat) form.set("output_format", "png");
   if (background) form.set("background", background);
   for (const [index, image] of images.entries()) {
     const normalized = await normalizeImage(image.data);
@@ -348,6 +348,7 @@ export function wardrobeImportApi(options = {}) {
   const running = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
+  const omitImageOutputFormat = () => ["1", "true", "yes"].includes(setting("OPENAI_OMIT_IMAGE_OUTPUT_FORMAT", "false").toLowerCase());
 
   async function setupStatus() {
     const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
@@ -442,7 +443,7 @@ export function wardrobeImportApi(options = {}) {
         if (stageName === "garment") {
           chromaKeyUsed = chooseChromaKey(current.metadata.color);
           const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), omitOutputFormat: omitImageOutputFormat(), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
           const rawName = `${stageName}-${stage.attempts}-source.png`;
           await writeFile(path.join(dir, rawName), bytes);
           failedAssetUrl = `${ASSET_ROOT}/${current.id}/${rawName}`;
@@ -463,7 +464,7 @@ export function wardrobeImportApi(options = {}) {
           }
           const model = { data: modelData, mime: "image/png", name: "model.png" };
           const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), omitOutputFormat: omitImageOutputFormat(), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
