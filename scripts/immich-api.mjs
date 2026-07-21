@@ -42,7 +42,7 @@ function publicAsset(asset) {
     height: asset.height,
     isFavorite: Boolean(asset.isFavorite),
     thumbnailUrl: `${API_ROOT}/assets/${asset.id}/thumbnail`,
-    originalUrl: `${API_ROOT}/assets/${asset.id}/original`,
+    imageUrl: `${API_ROOT}/assets/${asset.id}/preview`,
   };
 }
 
@@ -62,7 +62,7 @@ async function limitedBytes(response, limit) {
 export function immichApi(options = {}) {
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const baseUrl = () => setting("IMMICH_BASE_URL", "").replace(/\/$/, "");
-  const keyFile = () => setting("IMMICH_API_KEY_FILE", "/run/secrets/immich-api-key");
+  const keyFile = () => setting("IMMICH_API_KEY_FILE", ".secrets/immich-api-key");
   const years = () => Math.max(1, Math.min(10, Number(setting("IMMICH_YEARS", "4")) || 4));
   const referencePath = () => path.resolve(setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
 
@@ -119,9 +119,7 @@ export function immichApi(options = {}) {
 
   async function streamAsset(res, id, variant) {
     if (!UUID.test(id)) throw Object.assign(new Error("Invalid Immich asset id"), { status: 400 });
-    const endpoint = variant === "thumbnail"
-      ? `/api/assets/${id}/thumbnail?size=thumbnail`
-      : `/api/assets/${id}/original`;
+    const endpoint = `/api/assets/${id}/thumbnail?size=${variant}`;
     const response = await request(endpoint);
     const bytes = await limitedBytes(response, variant === "thumbnail" ? 10 * 1024 * 1024 : 18 * 1024 * 1024);
     res.statusCode = 200;
@@ -150,13 +148,13 @@ export function immichApi(options = {}) {
       if (url.pathname === `${API_ROOT}/assets` && req.method === "GET") {
         return json(res, 200, await search(url));
       }
-      const assetMatch = url.pathname.match(/^\/api\/immich\/assets\/([a-f0-9-]{36})\/(thumbnail|original)$/i);
+      const assetMatch = url.pathname.match(/^\/api\/immich\/assets\/([a-f0-9-]{36})\/(thumbnail|preview)$/i);
       if (assetMatch && req.method === "GET") return await streamAsset(res, assetMatch[1], assetMatch[2]);
       if (url.pathname === `${API_ROOT}/reference` && req.method === "POST") {
         const input = await body(req);
         if (!UUID.test(input.assetId || "")) throw Object.assign(new Error("A valid Immich asset id is required"), { status: 400 });
-        const response = await request(`/api/assets/${input.assetId}/original`);
-        const bytes = await limitedBytes(response, 64 * 1024 * 1024);
+        const response = await request(`/api/assets/${input.assetId}/thumbnail?size=preview`);
+        const bytes = await limitedBytes(response, 18 * 1024 * 1024);
         const normalized = await sharp(bytes)
           .rotate()
           .resize({ width: 1536, height: 1536, fit: "inside", withoutEnlargement: true })

@@ -33,12 +33,12 @@ const fakeImmich = createServer(async (req, res) => {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({ assets: { items: [{ id: assetId, type: "IMAGE", originalFileName: "fixture.jpg", fileCreatedAt: "2025-01-02T03:04:05.000Z", width: 2000, height: 1000 }], nextPage: null } }));
   }
-  if (req.url === `/api/assets/${oversizedId}/original`) {
+  if (req.url === `/api/assets/${oversizedId}/thumbnail?size=preview`) {
     res.setHeader("content-type", "image/jpeg");
     res.setHeader("content-length", String(19 * 1024 * 1024));
     return res.end();
   }
-  if (req.url === `/api/assets/${assetId}/thumbnail?size=thumbnail` || req.url === `/api/assets/${assetId}/original`) {
+  if (req.url === `/api/assets/${assetId}/thumbnail?size=thumbnail` || req.url === `/api/assets/${assetId}/thumbnail?size=preview`) {
     res.setHeader("content-type", "image/jpeg");
     return res.end(fixture);
   }
@@ -73,13 +73,18 @@ try {
   assert.equal(catalog.items.length, 1);
   assert.equal(catalog.items[0].id, assetId);
   assert.equal(catalog.items[0].thumbnailUrl, `/api/immich/assets/${assetId}/thumbnail`);
+  assert.equal(catalog.items[0].imageUrl, `/api/immich/assets/${assetId}/preview`);
   assert.equal(JSON.stringify(catalog).includes(secret), false);
 
   const thumbnail = await fetch(`${base}${catalog.items[0].thumbnailUrl}`);
   assert.equal(thumbnail.status, 200);
   assert.match(thumbnail.headers.get("content-type"), /^image\//);
 
-  const oversized = await fetch(`${base}/api/immich/assets/${oversizedId}/original`);
+  const preview = await fetch(`${base}${catalog.items[0].imageUrl}`);
+  assert.equal(preview.status, 200);
+  assert.match(preview.headers.get("content-type"), /^image\//);
+
+  const oversized = await fetch(`${base}/api/immich/assets/${oversizedId}/preview`);
   assert.equal(oversized.status, 413);
   assert.equal((await oversized.json()).error, "Immich image is too large");
 

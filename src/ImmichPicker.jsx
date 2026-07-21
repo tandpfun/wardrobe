@@ -75,7 +75,8 @@ export function ImmichPicker({ mode, onClose, onImport, onReferenceSaved }) {
     if (!selectedAssets.length) return;
     setBusy(true); setError("");
     try { await onImport(selectedAssets); }
-    catch (requestError) { setError(requestError.message); setBusy(false); }
+    catch (requestError) { setError(requestError.message); }
+    finally { setBusy(false); }
   };
 
   return (

@@ -315,7 +315,7 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
   if (!response.ok) throw new Error(result.error?.message || `OpenAI image request failed (${response.status})`);
   const encoded = result.data?.[0]?.b64_json;
   if (!encoded) throw new Error("OpenAI response did not contain image data");
-  return Buffer.from(encoded, "base64");
+  return normalizeImage(Buffer.from(encoded, "base64"));
 }
 
 async function openAIAnalyze({ key, baseUrl, model, image, mime }) {

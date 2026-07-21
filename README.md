@@ -76,7 +76,7 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 
 Create a dedicated Immich API key with only `asset.read`, `asset.view`, and `asset.download`, save the raw key in the gitignored path configured by `IMMICH_API_KEY_FILE`, and set `IMMICH_BASE_URL`. Wardrobe then offers smart search and recent browsing over a rolling `IMMICH_YEARS` window.
 
-The integration does not bulk-process the library. It proxies thumbnails on demand, stores only the reference portrait you explicitly choose, and limits outfit imports to five selected photos per batch. Immich originals are never modified.
+The integration does not bulk-process the library. It proxies thumbnails and Immich-transcoded processing previews on demand, stores only the reference portrait you explicitly choose, and limits outfit imports to five selected photos per batch. Immich originals are never modified.
 
 Wardrobe itself does not provide user authentication. Keep it on localhost or a trusted network, or place it behind an authenticated reverse proxy before exposing the Immich picker to other networks.
 
