@@ -29,6 +29,27 @@ npm run dev
 
 Open [localhost:5173](http://localhost:5173).
 
+### Try it without an API key
+
+Want to explore the gallery, outfit builder, and Outfits view before wiring up OpenAI? Seed a small local demo wardrobe and outfit collection:
+
+```bash
+npm run seed:demo   # add --force to overwrite existing demo data
+npm run dev
+```
+
+The demo garments and outfit previews are drawn locally with `sharp` — no API key or reference photo required. In this unconfigured state, generating an outfit image composes a flat-lay preview from your garment cutouts instead of a modeled photo. Add an `OPENAI_API_KEY` and reference photo to switch to full modeled generation.
+
+## Outfits
+
+Switch to the **Outfits** tab to combine pieces from your wardrobe into complete looks:
+
+- Build an outfit by picking garments and describing the occasion and style direction.
+- Generate a square modeled photo per outfit (or a local flat-lay preview in demo mode).
+- Edit, regenerate, and delete outfits; everything is stored in `data/outfits.json` and `data/outfit-images/`.
+
+Outfits created by the [`generate-outfits` Codex skill](.agents/skills/generate-outfits/SKILL.md) appear here automatically. Gallery edits (name, category, colors, tags) now persist to `data/library.json` through the app, so they survive refreshes and are shared across browsers.
+
 ## Import with Codex
 
 This repo includes two Codex skills: one imports clothes and generates modeled item photos; the other styles complete outfits and generates a modeled lookbook.
