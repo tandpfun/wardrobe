@@ -88,7 +88,7 @@ function GarmentPicker({ garments, selectedIds, onToggle }) {
             data-testid={`outfit-picker-${garment.id}`}
           >
             <span className="outfit-picker-thumb">
-              <img src={garment.thumbnail || garment.image} alt="" loading="lazy" />
+              <img src={apiUrl(garment.thumbnail || garment.image)} alt="" loading="lazy" />
               {selected && <span className="outfit-picker-check"><Check size={14} weight="bold" aria-hidden="true" /></span>}
             </span>
             <span className="outfit-picker-name">{garment.name || PART_LABELS[garment.part] || "Piece"}</span>
@@ -192,11 +192,11 @@ function OutfitCard({ outfit, garments, selected, onOpen }) {
     >
       <span className="outfit-card-art">
         {outfit.image ? (
-          <img src={outfit.image} alt={`${outfit.name} preview`} loading="lazy" />
+          <img src={apiUrl(outfit.image)} alt={`${outfit.name} preview`} loading="lazy" />
         ) : (
           <span className="outfit-card-placeholder" aria-hidden="true">
             {pieces.slice(0, 4).map((piece) => (
-              <img key={piece.id} src={piece.thumbnail || piece.image} alt="" loading="lazy" />
+              <img key={piece.id} src={apiUrl(piece.thumbnail || piece.image)} alt="" loading="lazy" />
             ))}
           </span>
         )}
@@ -278,7 +278,7 @@ function OutfitViewer({ outfit, garments, busy, demoMode, onClose, onGenerate, o
             <div className="outfit-piece-list" aria-label="Garments in this outfit">
               {pieces.map((piece) => (
                 <span className="outfit-piece" key={piece.id}>
-                  <img src={piece.thumbnail || piece.image} alt="" loading="lazy" />
+                  <img src={apiUrl(piece.thumbnail || piece.image)} alt="" loading="lazy" />
                   <span>
                     <strong>{piece.name || PART_LABELS[piece.part] || "Piece"}</strong>
                     <small>{PART_LABELS[piece.part] || "Piece"}</small>

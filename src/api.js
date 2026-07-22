@@ -8,18 +8,24 @@
 // locally and use no prefix.
 const DEPLOY_PROXY_TOKEN = "__PORT_4173__";
 
-function resolvePrefix() {
-  const token = DEPLOY_PROXY_TOKEN;
-  // Untouched token => local dev/preview => same-origin, no prefix.
-  if (token.startsWith("__PORT_")) return "";
+// Untouched token => local dev/preview => same-origin, no prefix. Otherwise the
+// token was rewritten to the proxy prefix; strip any trailing slash so joins
+// don't double up.
+export function normalizePrefix(token) {
+  if (typeof token !== "string" || token.startsWith("__PORT_")) return "";
   return token.replace(/\/+$/, "");
 }
 
-export const API_PREFIX = resolvePrefix();
-
-// Prefix only root-relative paths ("/api/...", "/_ipx/..."). Absolute URLs and
-// data:/blob: sources are returned untouched.
-export function apiUrl(path) {
+// Prefix only root-relative paths ("/api/...", "/_ipx/..."), preserving any
+// query string. Absolute URLs and data:/blob: sources are returned untouched,
+// so re-applying the helper to an already-prefixed value is a no-op.
+export function joinApiPath(prefix, path) {
   if (typeof path !== "string" || path[0] !== "/") return path;
-  return `${API_PREFIX}${path}`;
+  return `${prefix}${path}`;
+}
+
+export const API_PREFIX = normalizePrefix(DEPLOY_PROXY_TOKEN);
+
+export function apiUrl(path) {
+  return joinApiPath(API_PREFIX, path);
 }
