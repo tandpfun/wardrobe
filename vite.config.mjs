@@ -6,6 +6,7 @@ import { responsiveImageApi } from "./scripts/responsive-image-api.mjs";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   return {
+    base: "./",
     optimizeDeps: {
       include: ["react", "react-dom/client"],
     },
