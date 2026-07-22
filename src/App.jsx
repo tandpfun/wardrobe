@@ -3,6 +3,7 @@ import { Check, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OutfitsView } from "./outfits.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
+import { apiUrl } from "./api.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -51,7 +52,7 @@ function editableFields(item) {
 }
 
 async function patchWardrobeItem(id, fields) {
-  const response = await fetch(`/api/import/wardrobe/${id}`, {
+  const response = await fetch(apiUrl(`/api/import/wardrobe/${id}`), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ metadata: fields }),
@@ -541,7 +542,7 @@ export function App() {
   const [setup, setSetup] = useState(null);
 
   useEffect(() => {
-    fetch("/api/import/config", { cache: "no-store" })
+    fetch(apiUrl("/api/import/config"), { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then(setSetup)
       .catch(() => setSetup(null));
@@ -551,7 +552,7 @@ export function App() {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch("/api/import/wardrobe", { cache: "no-store" });
+        const response = await fetch(apiUrl("/api/import/wardrobe"), { cache: "no-store" });
         if (!response.ok) throw new Error("Could not load the wardrobe.");
         const loadedItems = await response.json();
         const legacyEdits = readLegacyEdits();
@@ -611,7 +612,7 @@ export function App() {
 
   const deleteItem = async (id) => {
     try {
-      const response = await fetch(`/api/import/wardrobe/${id}`, { method: "DELETE" });
+      const response = await fetch(apiUrl(`/api/import/wardrobe/${id}`), { method: "DELETE" });
       if (!response.ok && response.status !== 404) throw new Error("Could not delete the imported item.");
     } catch (requestError) {
       setError(requestError.message);
