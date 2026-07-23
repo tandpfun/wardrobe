@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build:production",
+  "outputDirectory": "dist",
+  "framework": null,
+  "functions": {
+    "api/**/*.mjs": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    { "source": "/((?!api/|assets/|_ipx/|.*\\.).*)", "destination": "/index.html" }
+  ]
+}

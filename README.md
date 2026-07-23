@@ -29,6 +29,27 @@ npm run dev
 
 Open [localhost:5173](http://localhost:5173).
 
+### Try it without an API key
+
+Want to explore the gallery, outfit builder, and Outfits view before wiring up OpenAI? Seed a small local demo wardrobe and outfit collection:
+
+```bash
+npm run seed:demo   # add --force to overwrite existing demo data
+npm run dev
+```
+
+The demo garments and outfit previews are drawn locally with `sharp` — no API key or reference photo required. In this unconfigured state, generating an outfit image composes a flat-lay preview from your garment cutouts instead of a modeled photo. Add an `OPENAI_API_KEY` and reference photo to switch to full modeled generation.
+
+## Outfits
+
+Switch to the **Outfits** tab to combine pieces from your wardrobe into complete looks:
+
+- Build an outfit by picking garments and describing the occasion and style direction.
+- Generate a square modeled photo per outfit (or a local flat-lay preview in demo mode).
+- Edit, regenerate, and delete outfits; everything is stored in `data/outfits.json` and `data/outfit-images/`.
+
+Outfits created by the [`generate-outfits` Codex skill](.agents/skills/generate-outfits/SKILL.md) appear here automatically. Gallery edits (name, category, colors, tags) now persist to `data/library.json` through the app, so they survive refreshes and are shared across browsers.
+
 ## Import with Codex
 
 This repo includes two Codex skills: one imports clothes and generates modeled item photos; the other styles complete outfits and generates a modeled lookbook.
@@ -54,6 +75,45 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 - Generates an optional modeled editorial preview
 - Keeps originals, jobs, generated images, and the JSON database local in `data/`
 - Supports drag, drop, paste, editing, review, regeneration, and approval
+
+## Deploy the demo to Vercel
+
+The full app relies on a Vite middleware backend and filesystem persistence that
+only run under `npm run dev` / `npm run preview`. That backend does **not** exist
+on a static host like Vercel, so the repo ships a **browser-only demo build** for
+Vercel instead:
+
+```bash
+npm run build:vercel   # seeds public/demo-data.json, then builds with VITE_DATA_MODE=browser
+```
+
+Vercel project settings (Framework preset **Other**):
+
+| Setting | Value |
+| --- | --- |
+| Build command | `npm run build:vercel` |
+| Output directory | `dist` |
+| Install command | `npm install` |
+| Environment variables | none — no `OPENAI_API_KEY` is used or bundled |
+
+`vercel.json` already encodes the build command, output directory, and an SPA
+rewrite, so a default import of the repo works without further configuration.
+
+**How the demo build works.** `scripts/seed-demo-static.mjs` renders the demo
+garments and outfit previews locally with `sharp` and inlines them as base64
+data URLs in `public/demo-data.json`. The build sets `VITE_DATA_MODE=browser`,
+which swaps the HTTP data layer (`apiFetch` in `src/api.js`) for an in-browser
+adapter (`src/data-browser.js`) that serves the same `/api/import/...` shapes
+from that bundle. Outfit previews are composed client-side on an HTML canvas —
+the browser analogue of the server's `sharp` compositor.
+
+**⚠️ Persistence limitation.** The Vercel build has **no server-side storage**.
+Creating, editing, deleting, and generating outfits works, but changes are saved
+only in the visitor's own browser (`localStorage`) — they are **not** durable,
+**not** shared across devices or visitors, and are lost if the browser data is
+cleared. This is an intentional, honest demo fallback. For durable, shared
+storage, run the local production path (Vite backend + filesystem), which is
+untouched by this build.
 
 ## Configuration
 
