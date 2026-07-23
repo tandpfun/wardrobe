@@ -9,15 +9,20 @@
 //   del(key)                -> void
 //   list(prefix)            -> string[]  (full keys)
 //
-// - BlobStore  : Vercel Blob, selected automatically when BLOB_READ_WRITE_TOKEN
-//                is present (i.e. on Vercel, or `vercel dev` with a linked
-//                Blob store). Images are stored with public access but their
-//                Blob URLs are NEVER returned to the browser: every asset is
-//                streamed back through an authenticated API function, so the
-//                app stays private.
+// - BlobStore  : Vercel Blob using PRIVATE access. Every object is written with
+//                `access: 'private'`, and every read goes through the SDK's
+//                authenticated `get()` (by pathname, which resolves the store
+//                URL internally). No Blob URL, token, or store id is ever
+//                returned to the browser: assets are streamed back through an
+//                app-authenticated API function. The store is authenticated
+//                either by a read-write token (BLOB_READ_WRITE_TOKEN, for
+//                local/admin import) or by Vercel OIDC (VERCEL_OIDC_TOKEN +
+//                BLOB_STORE_ID) for connected projects.
 //   LocalStore : plain filesystem under the data directory. Used for local
 //                development of the functions and for tests, so no cloud
-//                credentials are required to exercise the code paths.
+//                credentials are required to exercise the code paths. NEVER
+//                used on Vercel — getStore fails closed there when no durable
+//                private Blob store is configured.
 //
 // All keys are normalized through normalizeStorageKey so a caller can never
 // escape the namespace.
@@ -100,90 +105,102 @@ class LocalStore {
   }
 }
 
-class BlobStore {
-  constructor(token, blob) {
-    this.token = token;
-    this.blob = blob;
-    this.backend = "blob";
-    this.urlCache = new Map();
+async function streamToBuffer(stream) {
+  if (!stream) return Buffer.alloc(0);
+  const chunks = [];
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) chunks.push(Buffer.from(value));
   }
+  return Buffer.concat(chunks);
+}
 
-  async #url(normalized) {
-    if (this.urlCache.has(normalized)) return this.urlCache.get(normalized);
-    try {
-      const meta = await this.blob.head(normalized, { token: this.token });
-      const url = meta?.url || null;
-      if (url) this.urlCache.set(normalized, url);
-      return url;
-    } catch {
-      return null;
-    }
+function isNotFound(error) {
+  const name = error?.name || error?.constructor?.name || "";
+  return name === "BlobNotFoundError" || error?.status === 404 || /not.?found/i.test(error?.message || "");
+}
+
+// Vercel Blob backed by PRIVATE objects. `auth` is the credential bundle the
+// SDK needs: either { token } (read-write token) or { oidcToken, storeId }
+// (Vercel OIDC for connected projects). We spread it into every SDK call.
+class BlobStore {
+  constructor(blob, auth) {
+    this.blob = blob;
+    this.auth = auth;
+    this.backend = "blob";
   }
 
   async readJson(key, fallback = null) {
     const normalized = normalizeStorageKey(key);
-    const url = await this.#url(normalized);
-    if (!url) return fallback;
     try {
-      const response = await fetch(`${url}?_=${Date.now()}`, { cache: "no-store" });
-      if (!response.ok) return fallback;
-      return await response.json();
-    } catch {
-      return fallback;
+      const result = await this.blob.get(normalized, { access: "private", useCache: false, ...this.auth });
+      if (!result || result.statusCode !== 200) return fallback;
+      const buffer = await streamToBuffer(result.stream);
+      return JSON.parse(buffer.toString("utf8"));
+    } catch (error) {
+      if (isNotFound(error) || error instanceof SyntaxError) return fallback;
+      throw error;
     }
   }
 
   async writeJson(key, value) {
     const normalized = normalizeStorageKey(key);
-    const result = await this.blob.put(normalized, `${JSON.stringify(value, null, 2)}\n`, {
-      access: "public",
-      token: this.token,
+    await this.blob.put(normalized, `${JSON.stringify(value, null, 2)}\n`, {
+      access: "private",
       contentType: "application/json; charset=utf-8",
       addRandomSuffix: false,
       allowOverwrite: true,
       cacheControlMaxAge: 0,
+      ...this.auth,
     });
-    this.urlCache.set(normalized, result.url);
   }
 
   async putImage(key, buffer, contentType = "image/png") {
     const normalized = normalizeStorageKey(key);
-    const result = await this.blob.put(normalized, buffer, {
-      access: "public",
-      token: this.token,
+    await this.blob.put(normalized, buffer, {
+      access: "private",
       contentType,
       addRandomSuffix: false,
       allowOverwrite: true,
+      ...this.auth,
     });
-    this.urlCache.set(normalized, result.url);
   }
 
   async getImage(key) {
     const normalized = normalizeStorageKey(key);
-    const url = await this.#url(normalized);
-    if (!url) return null;
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) return null;
-    const data = Buffer.from(await response.arrayBuffer());
-    return { data, contentType: response.headers.get("content-type") || contentTypeFor(normalized) };
+    try {
+      const result = await this.blob.get(normalized, { access: "private", useCache: false, ...this.auth });
+      if (!result || result.statusCode !== 200) return null;
+      const data = await streamToBuffer(result.stream);
+      const contentType = result.blob?.contentType || result.headers?.get?.("content-type") || contentTypeFor(normalized);
+      return { data, contentType };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
   }
 
   async exists(key) {
-    return Boolean(await this.#url(normalizeStorageKey(key)));
+    const normalized = normalizeStorageKey(key);
+    try {
+      await this.blob.head(normalized, { ...this.auth });
+      return true;
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
   }
 
   async del(key) {
     const normalized = normalizeStorageKey(key);
-    const url = await this.#url(normalized);
-    this.urlCache.delete(normalized);
-    if (url) {
-      await this.blob.del(url, { token: this.token }).catch(() => {});
-    }
+    await this.blob.del(normalized, { ...this.auth }).catch(() => {});
   }
 
   async list(prefix) {
     const normalized = normalizeStorageKey(prefix);
-    const result = await this.blob.list({ prefix: `${normalized}/`, token: this.token });
+    const result = await this.blob.list({ prefix: `${normalized}/`, ...this.auth });
     return (result?.blobs || []).map((entry) => entry.pathname);
   }
 }
@@ -197,20 +214,55 @@ function contentTypeFor(file) {
   return "application/octet-stream";
 }
 
+// Resolve Blob credentials from the environment. Prefer Vercel OIDC (for
+// connected private stores) when both the token and store id are present;
+// otherwise use a read-write token (local/admin import). Returns null when no
+// durable private store is configured.
+export function blobAuth(env = process.env) {
+  if (env.VERCEL_OIDC_TOKEN && env.BLOB_STORE_ID) {
+    return { oidcToken: env.VERCEL_OIDC_TOKEN, storeId: env.BLOB_STORE_ID };
+  }
+  if (env.BLOB_READ_WRITE_TOKEN) {
+    return { token: env.BLOB_READ_WRITE_TOKEN };
+  }
+  return null;
+}
+
+// Whether a durable private Blob store is configured at all.
+export function blobConfigured(env = process.env) {
+  return Boolean(blobAuth(env));
+}
+
+function onVercel(env) {
+  return Boolean(env.VERCEL || env.VERCEL_ENV);
+}
+
 let cached;
 
-// Returns the process-wide store, choosing the Blob backend when a token is
-// configured and falling back to the local filesystem otherwise.
+// Returns the process-wide store. Uses the private Blob backend when a durable
+// store is configured. On Vercel with NO private Blob configured we FAIL CLOSED
+// (throw a 503) rather than silently using the ephemeral serverless filesystem,
+// which would appear to work but lose the user's photos. Off Vercel (local dev
+// / tests) we fall back to the filesystem so the code paths are exercisable
+// without cloud credentials.
 export async function getStore(env = process.env) {
   if (cached) return cached;
-  const token = env.BLOB_READ_WRITE_TOKEN;
-  if (token) {
+  const auth = blobAuth(env);
+  if (auth) {
     const blob = await import("@vercel/blob");
-    cached = new BlobStore(token, blob);
-  } else {
-    const baseDir = path.resolve(process.cwd(), env.WARDROBE_DATA_DIR || "data");
-    cached = new LocalStore(baseDir);
+    cached = new BlobStore(blob, auth);
+    return cached;
   }
+  if (onVercel(env)) {
+    throw Object.assign(
+      new Error(
+        "Durable private Blob storage is not configured. Set BLOB_READ_WRITE_TOKEN, or VERCEL_OIDC_TOKEN together with BLOB_STORE_ID.",
+      ),
+      { status: 503, expose: true },
+    );
+  }
+  const baseDir = path.resolve(process.cwd(), env.WARDROBE_DATA_DIR || "data");
+  cached = new LocalStore(baseDir);
   return cached;
 }
 
@@ -218,6 +270,12 @@ export async function getStore(env = process.env) {
 // against a temp directory without touching the module-level cache.
 export function createLocalStore(baseDir) {
   return new LocalStore(baseDir);
+}
+
+// Reset the module-level store cache. Tests use this so each case picks the
+// backend implied by its own env.
+export function resetStoreCache() {
+  cached = undefined;
 }
 
 export { LocalStore, BlobStore };

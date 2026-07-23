@@ -41,8 +41,10 @@ export default async function handler(req, res) {
     const result = await handleImportApi({ store, env, method, segments, body, query: req.query || {} });
     return sendResult(res, result);
   } catch (error) {
-    // Never leak internals; log a short message server-side only.
+    // Never leak internals; log a short message server-side only. Errors marked
+    // `expose` (e.g. fail-closed storage misconfiguration) carry a safe message.
     console.error("import handler error:", error?.message || "unknown");
+    if (error?.expose) return sendJson(res, error.status || 500, { error: error.message });
     return sendJson(res, error?.status || 500, { error: "Internal error handling request." });
   }
 }

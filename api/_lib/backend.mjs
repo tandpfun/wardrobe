@@ -76,11 +76,13 @@ const apiBaseUrl = (env) => setting(env, "OPENAI_API_BASE_URL", "https://api.ope
 async function setupStatus(store, env) {
   const hasApiKey = Boolean(apiKey(env));
   const hasModelReference = await store.exists(REFERENCE_KEY);
+  // Report only booleans + a coarse backend label. Never expose storage
+  // pathnames, Blob URLs, tokens, or the store id to the client.
   return {
     ready: hasApiKey && hasModelReference,
     hasApiKey,
     hasModelReference,
-    modelReference: hasModelReference ? "vercel-blob:private/model-reference.png" : null,
+    modelReference: null,
     backend: store.backend,
   };
 }

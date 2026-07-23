@@ -36,6 +36,7 @@ export default async function handler(req, res) {
     return sendResult(res, result);
   } catch (error) {
     console.error("bulk-import error:", error?.message || "unknown");
+    if (error?.expose) return sendJson(res, error.status || 500, { error: error.message });
     return sendJson(res, error?.status || 500, { error: "Internal error handling bulk import." });
   }
 }
