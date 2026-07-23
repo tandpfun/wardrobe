@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, Check, Plus, SpinnerGap, Trash, UploadSimple, WarningCircle, X } from "@phosphor-icons/react";
-import { apiUrl } from "./api.js";
+import { apiFetch, apiUrl } from "./api.js";
 import "./import-flow.css";
 
 const API = "/api/import/jobs";
@@ -22,7 +22,7 @@ const fileToDataUrl = (file) => new Promise((resolve, reject) => {
 });
 
 async function api(path, options) {
-  const response = await fetch(apiUrl(path), {
+  const response = await apiFetch(path, {
     ...options,
     headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
   });

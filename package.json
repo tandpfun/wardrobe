@@ -11,6 +11,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "seed:demo": "node scripts/seed-demo.mjs",
+    "seed:demo-static": "node scripts/seed-demo-static.mjs",
+    "build:vercel": "node scripts/seed-demo-static.mjs && VITE_DATA_MODE=browser vite build",
     "check": "npm run test && npm run build"
   },
   "devDependencies": {

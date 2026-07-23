@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, Check, Plus, SpinnerGap, Sparkle, Trash, WarningCircle, X } from "@phosphor-icons/react";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { apiUrl } from "./api.js";
+import { apiFetch, apiUrl } from "./api.js";
 import "./outfits.css";
 
 const OUTFITS_API = "/api/import/outfits";
@@ -24,7 +24,7 @@ const STATUS_COPY = {
 };
 
 async function api(path, options) {
-  const response = await fetch(apiUrl(path), {
+  const response = await apiFetch(path, {
     cache: "no-store",
     ...options,
     headers: { "Content-Type": "application/json", ...(options?.headers || {}) },

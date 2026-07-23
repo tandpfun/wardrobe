@@ -29,3 +29,20 @@ export const API_PREFIX = normalizePrefix(DEPLOY_PROXY_TOKEN);
 export function apiUrl(path) {
   return joinApiPath(API_PREFIX, path);
 }
+
+// Data mode is chosen at build time. The default ("server") talks to the Vite
+// middleware backend over HTTP. The "browser" build (VITE_DATA_MODE=browser,
+// used for static hosts like Vercel where no backend runs) routes the same
+// `/api/import/...` requests to an in-browser adapter backed by a bundled demo
+// bundle + localStorage. See src/data-browser.js.
+export const DATA_MODE = import.meta.env.VITE_DATA_MODE === "browser" ? "browser" : "server";
+
+// Single entry point for all app data requests. Callers use the same
+// `/api/import/...` paths regardless of mode; only the transport differs.
+export async function apiFetch(path, options) {
+  if (DATA_MODE === "browser") {
+    const { handleBrowserRequest } = await import("./data-browser.js");
+    return handleBrowserRequest(path, options);
+  }
+  return fetch(apiUrl(path), options);
+}
