@@ -13,6 +13,8 @@
     "seed:demo": "node scripts/seed-demo.mjs",
     "seed:demo-static": "node scripts/seed-demo-static.mjs",
     "build:vercel": "node scripts/seed-demo-static.mjs && VITE_DATA_MODE=browser vite build",
+    "build:production": "vite build",
+    "bulk-import": "node scripts/bulk-import.mjs",
     "check": "npm run test && npm run build"
   },
   "devDependencies": {
@@ -22,6 +24,7 @@
     "@fontsource-variable/instrument-sans": "^5.2.8",
     "@phosphor-icons/react": "^2.1.10",
     "@unpic/react": "^1.0.2",
+    "@vercel/blob": "^2.6.1",
     "@vitejs/plugin-react": "5.0.4",
     "ipx": "^3.1.1",
     "react": "19.2.0",

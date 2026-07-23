@@ -912,3 +912,36 @@ button { font: inherit; }
     box-shadow: inset 3px 0 0 var(--accent), -18px 0 50px rgba(25, 24, 22, .08);
   }
 }
+
+/* Private-access login gate (server/production mode only). */
+.auth-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--paper);
+}
+.auth-card {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 32px 28px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+.auth-loading { text-align: center; color: var(--muted); }
+.auth-title { margin: 0; font-size: 1.6rem; letter-spacing: .02em; }
+.auth-subtitle { margin: 0; color: var(--muted); font-size: .92rem; }
+.auth-input {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 1rem;
+}
+.auth-input:focus { border-color: var(--ink); outline: none; }
+.auth-error { margin: 0; color: var(--accent); font-size: .88rem; }
+.auth-submit { margin-top: 4px; }
+.app-nav-logout { margin-left: auto; }

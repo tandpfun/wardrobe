@@ -37,6 +37,11 @@ export function apiUrl(path) {
 // bundle + localStorage. See src/data-browser.js.
 export const DATA_MODE = import.meta.env.VITE_DATA_MODE === "browser" ? "browser" : "server";
 
+// Dispatched on the window whenever a server request comes back 401, so the
+// auth gate can drop the user back to the login screen without every caller
+// needing to handle it.
+export const UNAUTHORIZED_EVENT = "wardrobe:unauthorized";
+
 // Single entry point for all app data requests. Callers use the same
 // `/api/import/...` paths regardless of mode; only the transport differs.
 export async function apiFetch(path, options) {
@@ -44,5 +49,9 @@ export async function apiFetch(path, options) {
     const { handleBrowserRequest } = await import("./data-browser.js");
     return handleBrowserRequest(path, options);
   }
-  return fetch(apiUrl(path), options);
+  const response = await fetch(apiUrl(path), { credentials: "same-origin", ...options });
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
+  return response;
 }

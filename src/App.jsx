@@ -3,7 +3,8 @@ import { Check, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OutfitsView } from "./outfits.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { apiFetch } from "./api.js";
+import { apiFetch, DATA_MODE } from "./api.js";
+import { logout } from "./auth.jsx";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -631,11 +632,19 @@ export function App() {
     setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
   }, []);
 
+  const handleLogout = useCallback(async () => {
+    await logout();
+    window.location.reload();
+  }, []);
+
   return (
     <div className={`app-shell has-nav${selectedItem ? " has-selection" : ""}`}>
       <nav className="app-nav" aria-label="Switch between wardrobe and outfits">
         <button type="button" className={view === "wardrobe" ? "active" : ""} aria-pressed={view === "wardrobe"} onClick={() => setView("wardrobe")} data-testid="nav-wardrobe">Wardrobe</button>
         <button type="button" className={view === "outfits" ? "active" : ""} aria-pressed={view === "outfits"} onClick={() => setView("outfits")} data-testid="nav-outfits">Outfits</button>
+        {DATA_MODE === "server" && (
+          <button type="button" className="app-nav-logout" onClick={handleLogout} data-testid="nav-logout">Log out</button>
+        )}
       </nav>
 
       {view === "wardrobe" ? (
