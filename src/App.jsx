@@ -1,49 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Trash, X } from "@phosphor-icons/react";
+import { Bag, Check, Plus, TShirt, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
+import { OutfitBuilder, OutfitsGallery } from "./outfits.jsx";
 
-const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
+const LEGACY_EDITS_STORAGE_KEY = "open-wardrobe-edits-v1";
 
-const TYPES = [
-  { id: "all", label: "All" },
-  { id: "upperbody", label: "Tops", singular: "Top" },
-  { id: "wholebody_up", label: "Jackets", singular: "Jacket" },
-  { id: "lowerbody", label: "Bottoms", singular: "Bottom" },
-  { id: "accessories_up", label: "Accessories", singular: "Accessory" },
-  { id: "shoes", label: "Shoes", singular: "Shoes" },
-];
-
-const TYPE_MAP = Object.fromEntries(TYPES.map((type) => [type.id, type]));
-const TYPE_ORDER = Object.fromEntries(TYPES.slice(1).map((type, index) => [type.id, index]));
-
-
-function readEdits() {
+function readLegacyEdits() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    return JSON.parse(localStorage.getItem(LEGACY_EDITS_STORAGE_KEY) || "{}");
   } catch {
     return {};
   }
 }
 
-
-function persistEdit(item) {
-  const edits = readEdits();
-  edits[item.id] = {
-    name: item.name || "",
-    part: item.part,
-    color: item.color || null,
-    secondaryColor: item.secondaryColor || null,
-    tags: item.tags || [],
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(edits));
-}
-
-function removePersistedEdit(id) {
-  const edits = readEdits();
-  delete edits[id];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(edits));
+function clearLegacyEdits() {
+  localStorage.removeItem(LEGACY_EDITS_STORAGE_KEY);
 }
 
 function readDeletedItems() {
@@ -59,6 +32,24 @@ function persistDeletedItem(id) {
   const deleted = readDeletedItems();
   deleted.add(id);
   localStorage.setItem(DELETED_STORAGE_KEY, JSON.stringify([...deleted]));
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return "Never";
+  const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (diffDays <= 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  if (diffDays < 35) {
+    const weeks = Math.floor(diffDays / 7);
+    return `${weeks} ${weeks === 1 ? "week" : "weeks"} ago`;
+  }
+  if (diffDays < 365) {
+    const months = Math.floor(diffDays / 30);
+    return `${months} ${months === 1 ? "month" : "months"} ago`;
+  }
+  const years = Math.floor(diffDays / 365);
+  return `${years} ${years === 1 ? "year" : "years"} ago`;
 }
 
 function rgbToHex(red, green, blue) {
@@ -153,25 +144,89 @@ function sampleImageColor(image, canvas, event) {
   return null;
 }
 
-function GalleryItem({ item, selected, onOpen }) {
-  const type = TYPE_MAP[item.part]?.singular || "wardrobe item";
+function GalleryItem({ item, selected, onOpen, onWear, onPack, busy, categoryMap }) {
+  const type = categoryMap[item.part]?.singular || "wardrobe item";
+  const count = item.count ?? 1;
+  const dirtyCount = item.dirtyCount ?? 0;
+  const packedCount = item.packedCount ?? 0;
+  const [confirming, setConfirming] = useState(false);
 
   return (
-    <button
-      className={`gallery-item${selected ? " selected" : ""}`}
-      type="button"
-      onClick={() => onOpen(item.id)}
-      aria-label={`View ${item.name || type}`}
-      aria-pressed={selected}
-      data-testid={`wardrobe-item-${item.id}`}
-    >
-      <OptimizedImage
-        src={item.thumbnail || item.image}
-        alt=""
-        sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(33vw - 18px), 180px"
-        breakpoints={[120, 180, 240, 320, 480]}
-      />
-    </button>
+    <div className={`gallery-item-wrap${selected ? " selected" : ""}`}>
+      <button
+        className={`gallery-item${selected ? " selected" : ""}`}
+        type="button"
+        onClick={() => onOpen(item.id)}
+        aria-label={`View ${item.name || type}`}
+        aria-pressed={selected}
+        data-testid={`wardrobe-item-${item.id}`}
+      >
+        <OptimizedImage
+          src={item.thumbnail || item.image}
+          alt=""
+          sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(33vw - 18px), 180px"
+          breakpoints={[120, 180, 240, 320, 480]}
+        />
+        {(dirtyCount > 0 || packedCount > 0) && (
+          <span className="gallery-item-badges">
+            {dirtyCount > 0 && (
+              <span className="gallery-item-badge">
+                {count > 1 ? `${dirtyCount}/${count} washing` : "Washing"}
+              </span>
+            )}
+            {packedCount > 0 && (
+              <span className="gallery-item-badge is-packed">
+                {count > 1 ? `${packedCount}/${count} packed` : "Packed"}
+              </span>
+            )}
+          </span>
+        )}
+      </button>
+      {confirming ? (
+        <div className="gallery-item-wear-confirm" onClick={(event) => event.stopPropagation()}>
+          <span>Needs washing?</span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { onWear(item.id, true); setConfirming(false); }}
+            aria-label="Yes, send to the washing basket"
+          >
+            <Check size={13} weight="bold" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => { onWear(item.id, false); setConfirming(false); }}
+            aria-label="No, put it straight back"
+          >
+            <X size={13} aria-hidden="true" />
+          </button>
+        </div>
+      ) : (
+        <div className="gallery-item-actions">
+          <button
+            className="gallery-item-wear"
+            type="button"
+            disabled={busy}
+            onClick={(event) => { event.stopPropagation(); setConfirming(true); }}
+            aria-label={`Log wearing ${item.name || type}`}
+            title="Log wear"
+          >
+            <TShirt size={15} weight="regular" aria-hidden="true" />
+          </button>
+          <button
+            className="gallery-item-pack"
+            type="button"
+            disabled={busy}
+            onClick={(event) => { event.stopPropagation(); onPack(item.id); }}
+            aria-label={`Pack ${item.name || type} for the to go bag`}
+            title="Add to to go bag"
+          >
+            <Bag size={15} weight="regular" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -278,8 +333,66 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
   );
 }
 
-function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleStatus }) {
+function LocationField({ value, locations, onChange, onAddLocation, onManageLocations }) {
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+
+  const submitNew = async () => {
+    const name = newName.trim();
+    if (!name) { setAdding(false); return; }
+    try {
+      const location = await onAddLocation(name);
+      setNewName("");
+      setAdding(false);
+      if (location) onChange(location.id);
+    } catch {
+      setAdding(false);
+    }
+  };
+
+  if (adding) {
+    return (
+      <div className="location-add-row">
+        <input
+          autoFocus
+          value={newName}
+          onChange={(event) => setNewName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { event.preventDefault(); submitNew(); }
+            if (event.key === "Escape") { setAdding(false); setNewName(""); }
+          }}
+          placeholder="e.g. Top clothes rail"
+        />
+        <button type="button" className="secondary-button" onClick={submitNew}>Add</button>
+        <button type="button" className="secondary-button" onClick={() => { setAdding(false); setNewName(""); }}>Cancel</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="location-field-row">
+      <select
+        value={value || ""}
+        onChange={(event) => {
+          if (event.target.value === "__add__") { setAdding(true); return; }
+          onChange(event.target.value || null);
+        }}
+      >
+        <option value="">Not assigned</option>
+        {locations.map((location) => <option value={location.id} key={location.id}>{location.name}</option>)}
+        <option value="__add__">+ Add new location…</option>
+      </select>
+      {locations.length > 0 && (
+        <button type="button" className="location-manage-link" onClick={onManageLocations}>Manage locations</button>
+      )}
+    </div>
+  );
+}
+
+function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleStatus, locations, onAddLocation, onManageLocations, categories, categoryMap }) {
   const suggestedSecondary = palette.find((color) => color.toLowerCase() !== draft.color?.toLowerCase()) || "#9a9286";
+  const isCounted = Boolean(categoryMap[draft.part]?.isCounted);
+  const subcategories = categoryMap[draft.part]?.subcategories || [];
 
   return (
     <div className="item-editor">
@@ -288,15 +401,83 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
         <input
           value={draft.name}
           onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
-          placeholder={TYPE_MAP[draft.part]?.singular || "Wardrobe item"}
+          placeholder={categoryMap[draft.part]?.singular || "Wardrobe item"}
         />
       </label>
 
       <label className="field">
         <span>Category</span>
-        <select value={draft.part} onChange={(event) => setDraft((current) => ({ ...current, part: event.target.value }))}>
-          {TYPES.slice(1).map((type) => <option value={type.id} key={type.id}>{type.label}</option>)}
+        <select
+          value={draft.part}
+          onChange={(event) => {
+            const part = event.target.value;
+            const allowedSubcategoryIds = new Set((categoryMap[part]?.subcategories || []).map((sub) => sub.id));
+            setDraft((current) => ({
+              ...current,
+              part,
+              subcategory: allowedSubcategoryIds.has(current.subcategory) ? current.subcategory : null,
+            }));
+          }}
+        >
+          {categories.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}
         </select>
+      </label>
+
+      {subcategories.length > 0 && (
+        <label className="field">
+          <span>Subcategory</span>
+          <select
+            value={draft.subcategory || ""}
+            onChange={(event) => setDraft((current) => ({ ...current, subcategory: event.target.value || null }))}
+          >
+            <option value="">Unspecified</option>
+            {subcategories.map((sub) => <option value={sub.id} key={sub.id}>{sub.name}</option>)}
+          </select>
+        </label>
+      )}
+
+      <div className="field-row">
+        <label className="field">
+          <span>Brand</span>
+          <input
+            value={draft.brand || ""}
+            onChange={(event) => setDraft((current) => ({ ...current, brand: event.target.value }))}
+            placeholder="e.g. Nike"
+          />
+        </label>
+        <label className="field">
+          <span>Model</span>
+          <input
+            value={draft.model || ""}
+            onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
+            placeholder="e.g. Air Force 1"
+          />
+        </label>
+      </div>
+
+      <label className="field">
+        <span>{isCounted ? "How many do you have" : "Count"}</span>
+        <input
+          type="number"
+          min="1"
+          max="999"
+          value={draft.count ?? 1}
+          onChange={(event) => {
+            const next = Math.max(1, Math.min(999, Math.round(Number(event.target.value)) || 1));
+            setDraft((current) => ({ ...current, count: next }));
+          }}
+        />
+      </label>
+
+      <label className="field">
+        <span>Location</span>
+        <LocationField
+          value={draft.locationId}
+          locations={locations}
+          onChange={(locationId) => setDraft((current) => ({ ...current, locationId }))}
+          onAddLocation={onAddLocation}
+          onManageLocations={onManageLocations}
+        />
       </label>
 
       <fieldset className="color-field">
@@ -335,7 +516,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, onClose, onSave, onDelete }) {
+function ItemViewer({ item, locations, onClose, onSave, onDelete, onAddLocation, onManageLocations, categories, categoryMap }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -343,10 +524,22 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   const [sampling, setSampling] = useState(null);
   const [sampleStatus, setSampleStatus] = useState("");
   const [palette, setPalette] = useState(item.palette || []);
-  const [draft, setDraft] = useState({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
+  const buildDraft = (source) => ({
+    name: source.name || "",
+    part: source.part,
+    subcategory: source.subcategory || null,
+    color: source.color || "#9a9286",
+    secondaryColor: source.secondaryColor || null,
+    tags: [...(source.tags || [])],
+    brand: source.brand || "",
+    model: source.model || "",
+    locationId: source.locationId || null,
+    count: source.count ?? 1,
+  });
+  const [draft, setDraft] = useState(() => buildDraft(item));
   const [shaking, setShaking] = useState(false);
   const [closeBlocked, setCloseBlocked] = useState(false);
-  const type = TYPE_MAP[item.part]?.singular || "Wardrobe item";
+  const type = categoryMap[item.part]?.singular || "Wardrobe item";
   const hasModeledImage = Boolean(item.modeledImage);
   const pieceRotation = useMemo(() => {
     const hash = [...item.id].reduce((total, character) => total + character.charCodeAt(0), 0);
@@ -358,15 +551,25 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
     return JSON.stringify({
       name: draft.name.trim(),
       part: draft.part,
+      subcategory: draft.subcategory || null,
       color: draft.color?.toLowerCase() || null,
       secondaryColor: draft.secondaryColor?.toLowerCase() || null,
       tags: normalizedTags(draft.tags),
+      brand: draft.brand.trim(),
+      model: draft.model.trim(),
+      locationId: draft.locationId || null,
+      count: draft.count ?? 1,
     }) !== JSON.stringify({
       name: (item.name || "").trim(),
       part: item.part,
+      subcategory: item.subcategory || null,
       color: item.color?.toLowerCase() || null,
       secondaryColor: item.secondaryColor?.toLowerCase() || null,
       tags: normalizedTags(item.tags || []),
+      brand: (item.brand || "").trim(),
+      model: (item.model || "").trim(),
+      locationId: item.locationId || null,
+      count: item.count ?? 1,
     });
   }, [draft, item]);
 
@@ -411,18 +614,26 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
     setSampling(null);
     setSampleStatus("");
     setPalette(item.palette || []);
-    setDraft({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
+    setDraft(buildDraft(item));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item]);
 
   const cancelEditing = () => {
-    setDraft({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
+    setDraft(buildDraft(item));
     setSampling(null);
     setSampleStatus("");
     onClose();
   };
 
   const saveEditing = () => {
-    onSave({ ...item, ...draft, name: draft.name.trim(), tags: draft.tags.map((tag) => tag.trim()).filter(Boolean) });
+    onSave({
+      ...item,
+      ...draft,
+      name: draft.name.trim(),
+      tags: draft.tags.map((tag) => tag.trim()).filter(Boolean),
+      brand: draft.brand.trim() || null,
+      model: draft.model.trim() || null,
+    });
     setSampling(null);
     setSampleStatus("Changes saved.");
   };
@@ -487,7 +698,7 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
           />
           <div className="viewer-heading modeled-heading">
             <div>
-              <h2>{draft.name || TYPE_MAP[draft.part]?.singular}</h2>
+              <h2>{draft.name || categoryMap[draft.part]?.singular}</h2>
             </div>
           </div>
           {garmentArtwork}
@@ -496,7 +707,7 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
         <>
           <div className="viewer-heading">
             <div>
-              <h2>{draft.name || TYPE_MAP[draft.part]?.singular}</h2>
+              <h2>{draft.name || categoryMap[draft.part]?.singular}</h2>
             </div>
           </div>
           {garmentArtwork}
@@ -511,6 +722,11 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
           sampling={sampling}
           setSampling={setSampling}
           sampleStatus={sampleStatus}
+          locations={locations}
+          onAddLocation={onAddLocation}
+          onManageLocations={onManageLocations}
+          categories={categories}
+          categoryMap={categoryMap}
         />
 
         {closeBlocked && <p className="unsaved-notice" role="status">Save or cancel changes before closing.</p>}
@@ -532,12 +748,679 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   );
 }
 
+function WashingBasket({ items, locations, onClose, onComplete, categoryMap }) {
+  const [drafts, setDrafts] = useState(() => Object.fromEntries(items.map((item) => [item.id, item.locationId || ""])));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await onComplete(items.map((item) => ({ id: item.id, locationId: drafts[item.id] || null })));
+      onClose();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer washing-basket" role="dialog" aria-modal="true" aria-label="Washing basket">
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close washing basket">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="viewer-heading"><div><h2>Washing basket</h2></div></div>
+          <div className="viewer-details">
+            <div className="washing-basket-list">
+              {items.map((item) => {
+                const type = categoryMap[item.part]?.singular || "Item";
+                const count = item.count ?? 1;
+                return (
+                  <div className="washing-basket-row" key={item.id}>
+                    <OptimizedImage src={item.thumbnail || item.image} alt="" sizes="52px" breakpoints={[52, 104]} />
+                    <div className="washing-basket-row-body">
+                      <strong>{item.name || type}</strong>
+                      <span>{count > 1 ? `${item.dirtyCount} of ${count} in the wash` : "In the wash"}</span>
+                    </div>
+                    <select
+                      value={drafts[item.id] || ""}
+                      onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))}
+                      aria-label={`Location for ${item.name || type}`}
+                    >
+                      <option value="">Not assigned</option>
+                      {locations.map((location) => <option value={location.id} key={location.id}>{location.name}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
+              {!items.length && <p className="status empty">Nothing in the wash right now.</p>}
+            </div>
+
+            {error && <p className="status error">{error}</p>}
+
+            <div className="viewer-actions">
+              <span className="action-spacer" />
+              <button className="primary-button" type="button" disabled={busy || !items.length} onClick={submit}>
+                <Check size={15} weight="bold" aria-hidden="true" /> Done — I've put these away
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function ToGoBag({ items, onClose, onReturn, categoryMap }) {
+  const [busyId, setBusyId] = useState(null);
+
+  const markReturned = async (id, needsWashing) => {
+    setBusyId(id);
+    try {
+      await onReturn(id, needsWashing);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer to-go-bag" role="dialog" aria-modal="true" aria-label="To go bag">
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close to go bag">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="viewer-heading"><div><h2>To go bag</h2></div></div>
+          <div className="viewer-details">
+            <p className="card-help">Tick items off as you unpack them. Put clean items straight back away, or send worn ones to the washing basket. Anything still listed here is a reminder it hasn't come back yet.</p>
+            <div className="washing-basket-list">
+              {items.map((item) => {
+                const type = categoryMap[item.part]?.singular || "Item";
+                const count = item.count ?? 1;
+                return (
+                  <div className="washing-basket-row to-go-bag-row" key={item.id}>
+                    <OptimizedImage src={item.thumbnail || item.image} alt="" sizes="52px" breakpoints={[52, 104]} />
+                    <div className="washing-basket-row-body">
+                      <strong>{item.name || type}</strong>
+                      <span>{count > 1 ? `${item.packedCount} of ${count} packed` : "Packed"}</span>
+                    </div>
+                    <div className="to-go-bag-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busyId === item.id}
+                        onClick={() => markReturned(item.id, false)}
+                        title="Still clean — put it straight back away"
+                      >
+                        <Check size={14} weight="bold" aria-hidden="true" /> Put away
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busyId === item.id}
+                        onClick={() => markReturned(item.id, true)}
+                        title="Send to the washing basket"
+                      >
+                        <TShirt size={14} weight="regular" aria-hidden="true" /> Needs wash
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {!items.length && <p className="status empty">Nothing packed right now.</p>}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function LocationManager({ locations, onClose, onAdd, onRename, onDelete }) {
+  const [newName, setNewName] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState("");
+  const [error, setError] = useState("");
+
+  const submitAdd = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    try {
+      await onAdd(name);
+      setNewName("");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const submitRename = async (id) => {
+    const name = editingName.trim();
+    if (!name) { setEditingId(null); return; }
+    setBusyId(id);
+    try {
+      await onRename(id, name);
+      setEditingId(null);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    setBusyId(id);
+    try {
+      await onDelete(id);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer location-manager" role="dialog" aria-modal="true" aria-label="Manage locations">
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close location manager">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="viewer-heading"><div><h2>Locations</h2></div></div>
+          <div className="viewer-details">
+            <div className="location-manager-list">
+              {locations.map((location) => (
+                <div className="location-manager-row" key={location.id}>
+                  {editingId === location.id ? (
+                    <input
+                      autoFocus
+                      value={editingName}
+                      onChange={(event) => setEditingName(event.target.value)}
+                      onKeyDown={(event) => event.key === "Enter" && submitRename(location.id)}
+                    />
+                  ) : (
+                    <span>{location.name}</span>
+                  )}
+                  <div className="location-manager-row-actions">
+                    {editingId === location.id ? (
+                      <button type="button" className="secondary-button" disabled={busyId === location.id} onClick={() => submitRename(location.id)}>Save</button>
+                    ) : (
+                      <button type="button" className="secondary-button" onClick={() => { setEditingId(location.id); setEditingName(location.name); }}>Rename</button>
+                    )}
+                    <button
+                      type="button"
+                      className="delete-button"
+                      disabled={busyId === location.id}
+                      onClick={() => handleDelete(location.id)}
+                      aria-label={`Delete ${location.name}`}
+                    >
+                      <Trash size={14} weight="regular" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {!locations.length && <p className="status empty">No locations yet — add your first one below.</p>}
+            </div>
+
+            {error && <p className="status error">{error}</p>}
+
+            <div className="location-manager-add">
+              <input
+                value={newName}
+                onChange={(event) => setNewName(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && submitAdd()}
+                placeholder="e.g. Top clothes rail"
+              />
+              <button type="button" className="primary-button" onClick={submitAdd}>
+                <Plus size={14} weight="bold" aria-hidden="true" /> Add
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function CategoryManager({
+  categories, onClose, onAddCategory, onRenameCategory, onDeleteCategory,
+  onAddSubcategory, onRenameSubcategory, onDeleteSubcategory, needsSortingCount, onStartSorting,
+}) {
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newSubcategoryNames, setNewSubcategoryNames] = useState({});
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [editingSubcategoryKey, setEditingSubcategoryKey] = useState(null);
+  const [editingSubcategoryName, setEditingSubcategoryName] = useState("");
+  const [busyKey, setBusyKey] = useState(null);
+  const [error, setError] = useState("");
+
+  const submitAddCategory = async () => {
+    const label = newCategoryName.trim();
+    if (!label) return;
+    setError("");
+    try {
+      await onAddCategory(label);
+      setNewCategoryName("");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const submitRenameCategory = async (id) => {
+    const label = editingCategoryName.trim();
+    if (!label) { setEditingCategoryId(null); return; }
+    setBusyKey(`cat:${id}`);
+    setError("");
+    try {
+      await onRenameCategory(id, label);
+      setEditingCategoryId(null);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleDeleteCategory = async (id) => {
+    setBusyKey(`cat:${id}`);
+    setError("");
+    try {
+      await onDeleteCategory(id);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const submitAddSubcategory = async (categoryId) => {
+    const name = (newSubcategoryNames[categoryId] || "").trim();
+    if (!name) return;
+    setError("");
+    try {
+      await onAddSubcategory(categoryId, name);
+      setNewSubcategoryNames((current) => ({ ...current, [categoryId]: "" }));
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const submitRenameSubcategory = async (categoryId, subId) => {
+    const name = editingSubcategoryName.trim();
+    if (!name) { setEditingSubcategoryKey(null); return; }
+    const key = `sub:${categoryId}:${subId}`;
+    setBusyKey(key);
+    setError("");
+    try {
+      await onRenameSubcategory(categoryId, subId, name);
+      setEditingSubcategoryKey(null);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleDeleteSubcategory = async (categoryId, subId) => {
+    const key = `sub:${categoryId}:${subId}`;
+    setBusyKey(key);
+    setError("");
+    try {
+      await onDeleteSubcategory(categoryId, subId);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close settings">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="viewer-heading"><div><h2>Settings</h2></div></div>
+          <div className="viewer-details">
+            {needsSortingCount > 0 && (
+              <div className="needs-sorting-banner">
+                <span>{needsSortingCount} item{needsSortingCount === 1 ? "" : "s"} missing a subcategory</span>
+                <button type="button" className="primary-button" onClick={onStartSorting}>Start sorting</button>
+              </div>
+            )}
+
+            <h3 className="stats-section-heading">Categories</h3>
+            <div className="category-manager-list">
+              {categories.map((category) => {
+                const newSubName = newSubcategoryNames[category.id] || "";
+                return (
+                  <div className="category-manager-row" key={category.id}>
+                    <div className="category-manager-row-head">
+                      {editingCategoryId === category.id ? (
+                        <input
+                          autoFocus
+                          value={editingCategoryName}
+                          onChange={(event) => setEditingCategoryName(event.target.value)}
+                          onKeyDown={(event) => event.key === "Enter" && submitRenameCategory(category.id)}
+                        />
+                      ) : (
+                        <strong>{category.label}</strong>
+                      )}
+                      <div className="location-manager-row-actions">
+                        {editingCategoryId === category.id ? (
+                          <button type="button" className="secondary-button" disabled={busyKey === `cat:${category.id}`} onClick={() => submitRenameCategory(category.id)}>Save</button>
+                        ) : (
+                          <button type="button" className="secondary-button" onClick={() => { setEditingCategoryId(category.id); setEditingCategoryName(category.label); }}>Rename</button>
+                        )}
+                        <button
+                          type="button"
+                          className="delete-button"
+                          disabled={busyKey === `cat:${category.id}`}
+                          onClick={() => handleDeleteCategory(category.id)}
+                          aria-label={`Delete ${category.label}`}
+                        >
+                          <Trash size={14} weight="regular" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="subcategory-manager-list">
+                      {category.subcategories.map((sub) => {
+                        const key = `sub:${category.id}:${sub.id}`;
+                        return (
+                          <div className="subcategory-manager-row" key={sub.id}>
+                            {editingSubcategoryKey === key ? (
+                              <input
+                                autoFocus
+                                value={editingSubcategoryName}
+                                onChange={(event) => setEditingSubcategoryName(event.target.value)}
+                                onKeyDown={(event) => event.key === "Enter" && submitRenameSubcategory(category.id, sub.id)}
+                              />
+                            ) : (
+                              <span>{sub.name}</span>
+                            )}
+                            <div className="location-manager-row-actions">
+                              {editingSubcategoryKey === key ? (
+                                <button type="button" className="secondary-button" disabled={busyKey === key} onClick={() => submitRenameSubcategory(category.id, sub.id)}>Save</button>
+                              ) : (
+                                <button type="button" className="secondary-button" onClick={() => { setEditingSubcategoryKey(key); setEditingSubcategoryName(sub.name); }}>Rename</button>
+                              )}
+                              <button
+                                type="button"
+                                className="delete-button"
+                                disabled={busyKey === key}
+                                onClick={() => handleDeleteSubcategory(category.id, sub.id)}
+                                aria-label={`Delete ${sub.name}`}
+                              >
+                                <Trash size={14} weight="regular" aria-hidden="true" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div className="subcategory-manager-add">
+                        <input
+                          value={newSubName}
+                          onChange={(event) => setNewSubcategoryNames((current) => ({ ...current, [category.id]: event.target.value }))}
+                          onKeyDown={(event) => event.key === "Enter" && submitAddSubcategory(category.id)}
+                          placeholder={`Add a ${category.label.toLowerCase()} subcategory`}
+                        />
+                        <button type="button" className="secondary-button" onClick={() => submitAddSubcategory(category.id)}>
+                          <Plus size={14} weight="bold" aria-hidden="true" /> Add
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {!categories.length && <p className="status empty">No categories yet.</p>}
+            </div>
+
+            {error && <p className="status error">{error}</p>}
+
+            <div className="location-manager-add">
+              <input
+                value={newCategoryName}
+                onChange={(event) => setNewCategoryName(event.target.value)}
+                onKeyDown={(event) => event.key === "Enter" && submitAddCategory()}
+                placeholder="e.g. Bags"
+              />
+              <button type="button" className="primary-button" onClick={submitAddCategory}>
+                <Plus size={14} weight="bold" aria-hidden="true" /> Add category
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function SortingFlow({ items, categories, categoryMap, onAssign, onClose }) {
+  const [dismissedIds, setDismissedIds] = useState(() => new Set());
+  const [draftPart, setDraftPart] = useState(null);
+  const [draftSubcategory, setDraftSubcategory] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const queue = useMemo(() => items.filter((item) => !dismissedIds.has(item.id)), [items, dismissedIds]);
+  const current = queue[0] || null;
+
+  useEffect(() => {
+    if (!current) return;
+    setDraftPart(current.part);
+    setDraftSubcategory(current.subcategory || null);
+    setError("");
+  }, [current?.id]);
+
+  if (!current) {
+    return (
+      <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+        <div className="viewer-entry">
+          <aside className="viewer sorting-flow" role="dialog" aria-modal="true" aria-label="Sort items">
+            <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close sorting">
+              <X size={24} weight="light" aria-hidden="true" />
+            </button>
+            <div className="viewer-heading"><div><h2>All sorted</h2></div></div>
+            <div className="viewer-details">
+              <p className="status empty">Nothing left to sort right now.</p>
+            </div>
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  const type = categoryMap[current.part]?.singular || "Item";
+  const subcategories = categoryMap[draftPart]?.subcategories || [];
+
+  const submit = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await onAssign(current.id, draftPart, draftSubcategory);
+      setDismissedIds((prev) => new Set([...prev, current.id]));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const skip = () => setDismissedIds((prev) => new Set([...prev, current.id]));
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer sorting-flow" role="dialog" aria-modal="true" aria-label="Sort items">
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close sorting">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="viewer-heading"><div><h2>Sort items</h2></div></div>
+          <div className="viewer-details">
+            <p className="card-help">{queue.length} item{queue.length === 1 ? "" : "s"} left to sort.</p>
+
+            <div className="sorting-flow-item">
+              <OptimizedImage src={current.thumbnail || current.image} alt="" sizes="140px" breakpoints={[140, 280]} />
+              <strong>{current.name || type}</strong>
+            </div>
+
+            <label className="field">
+              <span>Category</span>
+              <select
+                value={draftPart}
+                onChange={(event) => {
+                  const part = event.target.value;
+                  const allowedIds = new Set((categoryMap[part]?.subcategories || []).map((sub) => sub.id));
+                  setDraftPart(part);
+                  setDraftSubcategory((current2) => allowedIds.has(current2) ? current2 : null);
+                }}
+              >
+                {categories.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}
+              </select>
+            </label>
+
+            {subcategories.length > 0 && (
+              <label className="field">
+                <span>Subcategory</span>
+                <select value={draftSubcategory || ""} onChange={(event) => setDraftSubcategory(event.target.value || null)}>
+                  <option value="">Unspecified</option>
+                  {subcategories.map((sub) => <option value={sub.id} key={sub.id}>{sub.name}</option>)}
+                </select>
+              </label>
+            )}
+
+            {error && <p className="status error">{error}</p>}
+
+            <div className="viewer-actions">
+              <button className="secondary-button" type="button" disabled={busy} onClick={skip}>Skip</button>
+              <span className="action-spacer" />
+              <button className="primary-button" type="button" disabled={busy} onClick={submit}>
+                <Check size={15} weight="bold" aria-hidden="true" /> Save &amp; next
+              </button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function StatRow({ item, maxWearCount, categoryMap }) {
+  const type = categoryMap[item.part]?.singular || "Item";
+  const wearCount = item.wearCount ?? 0;
+  const barWidth = maxWearCount > 0 ? Math.max(wearCount > 0 ? 4 : 0, Math.round((wearCount / maxWearCount) * 100)) : 0;
+
+  return (
+    <div className="stats-row">
+      <OptimizedImage src={item.thumbnail || item.image} alt="" sizes="44px" breakpoints={[44, 88]} />
+      <div className="stats-row-body">
+        <strong>{item.name || type}</strong>
+        <div className="stats-bar-track"><div className="stats-bar-fill" style={{ width: `${barWidth}%` }} /></div>
+        <span className="stats-row-meta">
+          {wearCount} {wearCount === 1 ? "wear" : "wears"} · worn {formatRelativeTime(item.lastWornAt).toLowerCase()} · washed {formatRelativeTime(item.lastWashedAt).toLowerCase()}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function Stats({ items, onClose, categoryMap }) {
+  const totalWears = useMemo(() => items.reduce((total, item) => total + (item.wearCount ?? 0), 0), [items]);
+  const neverWorn = useMemo(() => items.filter((item) => (item.wearCount ?? 0) === 0).length, [items]);
+  const mostWorn = useMemo(
+    () => [...items].filter((item) => (item.wearCount ?? 0) > 0).sort((a, b) => (b.wearCount ?? 0) - (a.wearCount ?? 0)).slice(0, 8),
+    [items],
+  );
+  const leastWorn = useMemo(
+    () => [...items].sort((a, b) => (a.wearCount ?? 0) - (b.wearCount ?? 0) || (a.name || "").localeCompare(b.name || "")).slice(0, 8),
+    [items],
+  );
+  const maxWearCount = mostWorn[0]?.wearCount ?? 0;
+
+  return (
+    <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry">
+        <aside className="viewer stats-panel" role="dialog" aria-modal="true" aria-label="Wardrobe stats">
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close stats">
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="viewer-heading"><div><h2>Stats</h2></div></div>
+          <div className="viewer-details">
+            <div className="stats-overview">
+              <div className="stats-overview-item"><strong>{items.length}</strong><span>Pieces</span></div>
+              <div className="stats-overview-item"><strong>{totalWears}</strong><span>Wears logged</span></div>
+              <div className="stats-overview-item"><strong>{neverWorn}</strong><span>Never worn</span></div>
+            </div>
+
+            <h3 className="stats-section-heading">Most worn</h3>
+            {mostWorn.length ? (
+              <div className="stats-list">
+                {mostWorn.map((item) => <StatRow item={item} key={item.id} maxWearCount={maxWearCount} categoryMap={categoryMap} />)}
+              </div>
+            ) : <p className="status empty">Log a few wears to see your most-worn pieces here.</p>}
+
+            {!!leastWorn.length && (
+              <>
+                <h3 className="stats-section-heading">Rarely worn</h3>
+                <div className="stats-list">
+                  {leastWorn.map((item) => <StatRow item={item} key={item.id} maxWearCount={maxWearCount} categoryMap={categoryMap} />)}
+                </div>
+              </>
+            )}
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [items, setItems] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [outfits, setOutfits] = useState([]);
+  const [view, setView] = useState("wardrobe");
+  const [activeOutfitId, setActiveOutfitId] = useState(undefined);
   const [activeType, setActiveType] = useState("all");
+  const [activeSubcategory, setActiveSubcategory] = useState(null);
+  const [activeBrand, setActiveBrand] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [showWashingBasket, setShowWashingBasket] = useState(false);
+  const [showToGoBag, setShowToGoBag] = useState(false);
+  const [showLocationManager, setShowLocationManager] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSortingFlow, setShowSortingFlow] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/import/locations", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : []))
+      .then(setLocations)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/import/categories", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : []))
+      .then(setCategories)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/import/outfits", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : []))
+      .then(setOutfits)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -545,11 +1428,38 @@ export function App() {
         if (!response.ok) throw new Error("Could not load the wardrobe.");
         return response.json();
       })
-      .then((loadedItems) => {
-        const edits = readEdits();
+      .then(async (loadedItems) => {
         const deleted = readDeletedItems();
-        const visibleItems = loadedItems.filter((item) => !deleted.has(item.id));
-        setItems(visibleItems.map((item) => ({ ...item, ...(edits[item.id] || {}) })));
+        let visibleItems = loadedItems.filter((item) => !deleted.has(item.id));
+
+        // One-time migration: earlier versions of this app only saved edits to
+        // this browser's localStorage, never to the server. Replay any pending
+        // local edits through the real PATCH endpoint once, then drop the cache,
+        // so nothing a user previously changed is silently lost.
+        const legacyEdits = readLegacyEdits();
+        const legacyIds = Object.keys(legacyEdits);
+        if (legacyIds.length) {
+          visibleItems = await Promise.all(visibleItems.map(async (item) => {
+            const edit = legacyEdits[item.id];
+            if (!edit) return item;
+            try {
+              const response = await fetch(`/api/import/wardrobe/${item.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(edit),
+              });
+              if (response.ok) return await response.json();
+            } catch {
+              // Network hiccup — keep the local edit visible below; the cache
+              // stays intact so migration retries on the next load.
+              return { ...item, ...edit };
+            }
+            return { ...item, ...edit };
+          }));
+          clearLegacyEdits();
+        }
+
+        setItems(visibleItems);
       })
       .catch((requestError) => setError(requestError.message))
       .finally(() => setLoading(false));
@@ -557,26 +1467,78 @@ export function App() {
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
 
+  const categoryMap = useMemo(() => Object.fromEntries(categories.map((category) => [category.id, category])), [categories]);
+  const categoryOrder = useMemo(() => Object.fromEntries(categories.map((category, index) => [category.id, index])), [categories]);
+  const navCategories = useMemo(() => [{ id: "all", label: "All" }, ...categories.map((category) => ({ id: category.id, label: category.label }))], [categories]);
+
+  const needsSortingItems = useMemo(() => items.filter((item) => {
+    const category = categoryMap[item.part];
+    if (!category) return true;
+    return category.subcategories.length > 0 && !item.subcategory;
+  }), [items, categoryMap]);
+
+  const typeItems = useMemo(
+    () => activeType === "all" ? items : items.filter((item) => item.part === activeType),
+    [activeType, items],
+  );
+
+  const availableBrands = useMemo(
+    () => [...new Set(typeItems.map((item) => item.brand).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [typeItems],
+  );
+
   const visibleItems = useMemo(() => {
-    const filtered = activeType === "all" ? items : items.filter((item) => item.part === activeType);
+    let filtered = typeItems;
+    if (activeSubcategory) filtered = filtered.filter((item) => item.subcategory === activeSubcategory);
+    if (activeBrand) filtered = filtered.filter((item) => item.brand === activeBrand);
     return [...filtered].sort((a, b) => {
       if (activeType === "all") {
-        const typeDifference = (TYPE_ORDER[a.part] ?? 99) - (TYPE_ORDER[b.part] ?? 99);
+        const typeDifference = (categoryOrder[a.part] ?? 99) - (categoryOrder[b.part] ?? 99);
         if (typeDifference) return typeDifference;
       }
       return a.id.localeCompare(b.id);
     });
-  }, [activeType, items]);
+  }, [activeType, typeItems, activeSubcategory, activeBrand, categoryOrder]);
+
+  const laundryItems = useMemo(() => items.filter((item) => (item.dirtyCount ?? 0) > 0), [items]);
+  const packedItems = useMemo(() => items.filter((item) => (item.packedCount ?? 0) > 0), [items]);
 
   const chooseType = (typeId) => {
     setActiveType(typeId);
+    setActiveSubcategory(null);
+    setActiveBrand(null);
     setSelectedId(null);
   };
 
-  const saveItem = (updatedItem) => {
+  const saveItem = useCallback(async (updatedItem) => {
     setItems((current) => current.map((item) => item.id === updatedItem.id ? updatedItem : item));
-    persistEdit(updatedItem);
-  };
+    try {
+      const response = await fetch(`/api/import/wardrobe/${updatedItem.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: updatedItem.name,
+          part: updatedItem.part,
+          subcategory: updatedItem.subcategory,
+          color: updatedItem.color,
+          secondaryColor: updatedItem.secondaryColor,
+          tags: updatedItem.tags,
+          brand: updatedItem.brand,
+          model: updatedItem.model,
+          locationId: updatedItem.locationId,
+          count: updatedItem.count,
+        }),
+      });
+      if (response.ok) {
+        const saved = await response.json();
+        setItems((current) => current.map((item) => item.id === saved.id ? saved : item));
+      } else {
+        setError("Could not save changes to the server — they may not persist.");
+      }
+    } catch {
+      setError("Could not save changes to the server — they may not persist.");
+    }
+  }, []);
 
   const deleteItem = async (id) => {
     if (id.startsWith("import-")) {
@@ -589,7 +1551,9 @@ export function App() {
       }
     }
     setItems((current) => current.filter((item) => item.id !== id));
-    removePersistedEdit(id);
+    setOutfits((current) => current
+      .map((outfit) => outfit.garmentIds.includes(id) ? { ...outfit, garmentIds: outfit.garmentIds.filter((gid) => gid !== id) } : outfit)
+      .filter((outfit) => outfit.garmentIds.length > 0));
     persistDeletedItem(id);
     setSelectedId(null);
   };
@@ -603,47 +1567,400 @@ export function App() {
     setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
   }, []);
 
+  const wearItem = useCallback(async (id, needsWashing) => {
+    setItems((current) => current.map((item) => {
+      if (item.id !== id) return item;
+      const available = Math.max(0, (item.count ?? 1) - (item.packedCount ?? 0));
+      return {
+        ...item,
+        lastWornAt: new Date().toISOString(),
+        dirtyCount: needsWashing ? Math.min(available, (item.dirtyCount ?? 0) + 1) : (item.dirtyCount ?? 0),
+      };
+    }));
+    try {
+      const response = await fetch(`/api/import/wardrobe/${id}/wear`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ needsWashing }),
+      });
+      if (response.ok) {
+        const updated = await response.json();
+        setItems((current) => current.map((item) => item.id === id ? updated : item));
+      }
+    } catch {
+      // Optimistic update already applied; will reconcile on next load.
+    }
+  }, []);
+
+  const packItem = useCallback(async (id) => {
+    setItems((current) => current.map((item) => {
+      if (item.id !== id) return item;
+      const available = Math.max(0, (item.count ?? 1) - (item.dirtyCount ?? 0));
+      return { ...item, packedCount: Math.min(available, (item.packedCount ?? 0) + 1) };
+    }));
+    try {
+      const response = await fetch(`/api/import/wardrobe/${id}/pack`, { method: "POST" });
+      if (response.ok) {
+        const updated = await response.json();
+        setItems((current) => current.map((item) => item.id === id ? updated : item));
+      }
+    } catch {
+      // Optimistic update already applied; will reconcile on next load.
+    }
+  }, []);
+
+  const returnItem = useCallback(async (id, needsWashing) => {
+    setItems((current) => current.map((item) => {
+      if (item.id !== id) return item;
+      const returning = item.packedCount ?? 0;
+      return {
+        ...item,
+        packedCount: 0,
+        dirtyCount: needsWashing ? Math.min(item.count ?? 1, (item.dirtyCount ?? 0) + returning) : (item.dirtyCount ?? 0),
+        wearCount: returning > 0 ? (item.wearCount ?? 0) + 1 : (item.wearCount ?? 0),
+        lastWornAt: returning > 0 ? new Date().toISOString() : item.lastWornAt,
+      };
+    }));
+    const response = await fetch(`/api/import/wardrobe/${id}/return`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ needsWashing }),
+    });
+    if (!response.ok) throw new Error("Could not update the to go bag.");
+    const updated = await response.json();
+    setItems((current) => current.map((item) => item.id === id ? updated : item));
+  }, []);
+
+  const completeWash = useCallback(async (entries) => {
+    const response = await fetch("/api/import/wardrobe/wash-complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: entries }),
+    });
+    if (!response.ok) throw new Error("Could not update the washing basket.");
+    const byId = Object.fromEntries(entries.map((entry) => [entry.id, entry.locationId]));
+    setItems((current) => current.map((item) => byId[item.id] !== undefined ? { ...item, dirtyCount: 0, locationId: byId[item.id] } : item));
+  }, []);
+
+  const addLocation = useCallback(async (name) => {
+    const response = await fetch("/api/import/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error("Could not add that location.");
+    const location = await response.json();
+    setLocations((current) => [...current, location]);
+    return location;
+  }, []);
+
+  const renameLocation = useCallback(async (id, name) => {
+    const response = await fetch(`/api/import/locations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error("Could not rename that location.");
+    const location = await response.json();
+    setLocations((current) => current.map((entry) => entry.id === id ? location : entry));
+  }, []);
+
+  const deleteLocation = useCallback(async (id) => {
+    const response = await fetch(`/api/import/locations/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error("Could not delete that location.");
+    setLocations((current) => current.filter((entry) => entry.id !== id));
+    setItems((current) => current.map((item) => item.locationId === id ? { ...item, locationId: null } : item));
+  }, []);
+
+  const addCategory = useCallback(async (label) => {
+    const response = await fetch("/api/import/categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not add that category.");
+    const category = await response.json();
+    setCategories((current) => [...current, category]);
+    return category;
+  }, []);
+
+  const renameCategory = useCallback(async (id, label) => {
+    const response = await fetch(`/api/import/categories/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not rename that category.");
+    const category = await response.json();
+    setCategories((current) => current.map((entry) => entry.id === id ? category : entry));
+  }, []);
+
+  const deleteCategory = useCallback(async (id) => {
+    const response = await fetch(`/api/import/categories/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not delete that category.");
+    setCategories((current) => current.filter((entry) => entry.id !== id));
+  }, []);
+
+  const addSubcategory = useCallback(async (categoryId, name) => {
+    const response = await fetch(`/api/import/categories/${categoryId}/subcategories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not add that subcategory.");
+    const subcategory = await response.json();
+    setCategories((current) => current.map((entry) => entry.id === categoryId
+      ? { ...entry, subcategories: [...entry.subcategories, subcategory] }
+      : entry));
+    return subcategory;
+  }, []);
+
+  const renameSubcategory = useCallback(async (categoryId, subId, name) => {
+    const response = await fetch(`/api/import/categories/${categoryId}/subcategories/${subId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not rename that subcategory.");
+    const subcategory = await response.json();
+    setCategories((current) => current.map((entry) => entry.id === categoryId
+      ? { ...entry, subcategories: entry.subcategories.map((sub) => sub.id === subId ? subcategory : sub) }
+      : entry));
+  }, []);
+
+  const deleteSubcategory = useCallback(async (categoryId, subId) => {
+    const response = await fetch(`/api/import/categories/${categoryId}/subcategories/${subId}`, { method: "DELETE" });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not delete that subcategory.");
+    setCategories((current) => current.map((entry) => entry.id === categoryId
+      ? { ...entry, subcategories: entry.subcategories.filter((sub) => sub.id !== subId) }
+      : entry));
+    setItems((current) => current.map((item) => item.subcategory === subId ? { ...item, subcategory: null } : item));
+  }, []);
+
+  const assignCategory = useCallback(async (id, part, subcategory) => {
+    const response = await fetch(`/api/import/wardrobe/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ part, subcategory }),
+    });
+    if (!response.ok) throw new Error("Could not save that category.");
+    const updated = await response.json();
+    setItems((current) => current.map((item) => item.id === id ? updated : item));
+    return updated;
+  }, []);
+
+  const saveOutfit = useCallback(async (payload) => {
+    const isNew = !payload.id;
+    const response = await fetch(isNew ? "/api/import/outfits" : `/api/import/outfits/${payload.id}`, {
+      method: isNew ? "POST" : "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not save that outfit.");
+    const saved = await response.json();
+    setOutfits((current) => isNew ? [...current, saved] : current.map((entry) => entry.id === saved.id ? saved : entry));
+    return saved;
+  }, []);
+
+  const deleteOutfit = useCallback(async (id) => {
+    const response = await fetch(`/api/import/outfits/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Could not delete that outfit.");
+    setOutfits((current) => current.filter((entry) => entry.id !== id));
+  }, []);
+
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>
+            {view === "wardrobe" && <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>}
+            <nav className="view-switch" aria-label="Switch between wardrobe and outfits">
+              <button type="button" className={view === "wardrobe" ? "active" : ""} onClick={() => setView("wardrobe")}>Wardrobe</button>
+              <button type="button" className={view === "outfits" ? "active" : ""} onClick={() => setView("outfits")}>Outfits</button>
+            </nav>
           </div>
-          <nav className="category-nav" aria-label="Filter wardrobe by item type">
-            {TYPES.map((type) => (
+          {view === "wardrobe" && (
+          <>
+          <div className="nav-row">
+            <nav className="category-nav" aria-label="Filter wardrobe by item type">
+              {navCategories.map((type) => (
+                <button
+                  key={type.id}
+                  type="button"
+                  className={activeType === type.id ? "active" : ""}
+                  onClick={() => chooseType(type.id)}
+                  aria-pressed={activeType === type.id}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </nav>
+            <nav className="status-nav" aria-label="Checked-out items">
               <button
-                key={type.id}
                 type="button"
-                className={activeType === type.id ? "active" : ""}
-                onClick={() => chooseType(type.id)}
-                aria-pressed={activeType === type.id}
+                className={showWashingBasket ? "active" : ""}
+                onClick={() => setShowWashingBasket(true)}
               >
-                {type.label}
+                Laundry Basket{laundryItems.length > 0 ? ` (${laundryItems.length})` : ""}
               </button>
-            ))}
-          </nav>
+              <button
+                type="button"
+                className={showToGoBag ? "active" : ""}
+                onClick={() => setShowToGoBag(true)}
+              >
+                To Go Bag{packedItems.length > 0 ? ` (${packedItems.length})` : ""}
+              </button>
+              <button
+                type="button"
+                className={showStats ? "active" : ""}
+                onClick={() => setShowStats(true)}
+              >
+                Stats
+              </button>
+              <button
+                type="button"
+                className={showSettings ? "active" : ""}
+                onClick={() => setShowSettings(true)}
+              >
+                Settings{needsSortingItems.length > 0 ? ` (${needsSortingItems.length})` : ""}
+              </button>
+            </nav>
+          </div>
+
+          {((categoryMap[activeType]?.subcategories?.length > 0) || availableBrands.length > 0) && (
+            <div className="filters-row">
+              {categoryMap[activeType]?.subcategories?.length > 0 && (
+                <select
+                  className="filter-select"
+                  value={activeSubcategory || ""}
+                  onChange={(event) => setActiveSubcategory(event.target.value || null)}
+                  aria-label={`Filter ${categoryMap[activeType]?.label || "items"} by subcategory`}
+                >
+                  <option value="">All {categoryMap[activeType]?.label}</option>
+                  {categoryMap[activeType].subcategories.map((sub) => <option value={sub.id} key={sub.id}>{sub.name}</option>)}
+                </select>
+              )}
+              {availableBrands.length > 0 && (
+                <select
+                  className="filter-select"
+                  value={activeBrand || ""}
+                  onChange={(event) => setActiveBrand(event.target.value || null)}
+                  aria-label="Filter by brand"
+                >
+                  <option value="">All brands</option>
+                  {availableBrands.map((brand) => <option value={brand} key={brand}>{brand}</option>)}
+                </select>
+              )}
+            </div>
+          )}
+          </>
+          )}
         </header>
 
-        {error && <p className="status error">{error}</p>}
-        {!error && loading && <p className="status">Loading wardrobe</p>}
-        {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+        {view === "wardrobe" && error && <p className="status error">{error}</p>}
+        {view === "wardrobe" && !error && loading && <p className="status">Loading wardrobe</p>}
+        {view === "wardrobe" && !error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
 
-        {!!items.length && (
-          <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
+        {view === "wardrobe" && !!items.length && (
+          <section className="gallery-grid" aria-label={`${categoryMap[activeType]?.label || "All"} wardrobe items`}>
             {visibleItems.map((item) => (
               <GalleryItem
                 key={item.id}
                 item={item}
                 selected={selectedId === item.id}
                 onOpen={setSelectedId}
+                onWear={wearItem}
+                onPack={packItem}
+                categoryMap={categoryMap}
               />
             ))}
           </section>
         )}
+
+        {view === "outfits" && (
+          <OutfitsGallery
+            outfits={outfits}
+            items={items}
+            onNew={() => setActiveOutfitId(null)}
+            onOpen={(id) => setActiveOutfitId(id)}
+          />
+        )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedItem && (
+        <ItemViewer
+          item={selectedItem}
+          locations={locations}
+          onClose={() => setSelectedId(null)}
+          onSave={saveItem}
+          onDelete={deleteItem}
+          onAddLocation={addLocation}
+          onManageLocations={() => setShowLocationManager(true)}
+          categories={categories}
+          categoryMap={categoryMap}
+        />
+      )}
+      {showWashingBasket && (
+        <WashingBasket
+          items={laundryItems}
+          locations={locations}
+          onClose={() => setShowWashingBasket(false)}
+          onComplete={completeWash}
+          categoryMap={categoryMap}
+        />
+      )}
+      {showToGoBag && (
+        <ToGoBag
+          items={packedItems}
+          onClose={() => setShowToGoBag(false)}
+          onReturn={returnItem}
+          categoryMap={categoryMap}
+        />
+      )}
+      {showStats && <Stats items={items} onClose={() => setShowStats(false)} categoryMap={categoryMap} />}
+      {showLocationManager && (
+        <LocationManager
+          locations={locations}
+          onClose={() => setShowLocationManager(false)}
+          onAdd={addLocation}
+          onRename={renameLocation}
+          onDelete={deleteLocation}
+        />
+      )}
+      {showSettings && (
+        <CategoryManager
+          categories={categories}
+          onClose={() => setShowSettings(false)}
+          onAddCategory={addCategory}
+          onRenameCategory={renameCategory}
+          onDeleteCategory={deleteCategory}
+          onAddSubcategory={addSubcategory}
+          onRenameSubcategory={renameSubcategory}
+          onDeleteSubcategory={deleteSubcategory}
+          needsSortingCount={needsSortingItems.length}
+          onStartSorting={() => { setShowSettings(false); setShowSortingFlow(true); }}
+        />
+      )}
+      {showSortingFlow && (
+        <SortingFlow
+          items={needsSortingItems}
+          categories={categories}
+          categoryMap={categoryMap}
+          onAssign={assignCategory}
+          onClose={() => setShowSortingFlow(false)}
+        />
+      )}
+      {activeOutfitId !== undefined && (
+        <OutfitBuilder
+          outfit={activeOutfitId ? outfits.find((entry) => entry.id === activeOutfitId) : null}
+          items={items}
+          categories={categories}
+          categoryMap={categoryMap}
+          onClose={() => setActiveOutfitId(undefined)}
+          onSave={saveOutfit}
+          onDelete={deleteOutfit}
+        />
+      )}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
   );
