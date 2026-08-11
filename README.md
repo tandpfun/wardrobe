@@ -70,6 +70,9 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 | `MINIMAX_API_BASE_URL` | `https://api.minimax.io/v1` |
 | `MINIMAX_IMAGE_MODEL` | `image-01` |
 | `MINIMAX_IMAGE_RESPONSE_FORMAT` | `base64` |
+| `MINIMAX_IMAGE_ASPECT_RATIO` | Optional; takes priority over stage width and height |
+| `MINIMAX_PROMPT_OPTIMIZER` | `false` |
+| `MINIMAX_IMAGE_SEED` | Optional integer seed |
 
 Set `WARDROBE_IMAGE_PROVIDER=minimax` to run the garment and modeled image-to-image
 stages through the MiniMax `/v1/image_generation` endpoint. The reference images are
@@ -77,7 +80,8 @@ mapped to `subject_reference`, and both `url` and `base64` responses are decoded
 the same review pipeline. Use `https://api.minimaxi.com/v1` for the China endpoint,
 `image-01` or `image-01-live` for the model, and optionally set
 `MINIMAX_GARMENT_MODEL`, `MINIMAX_MODELED_MODEL`, `MINIMAX_IMAGE_ASPECT_RATIO`, or
-`MINIMAX_PROMPT_OPTIMIZER`. Clothing detection still uses the OpenAI vision model.
+`MINIMAX_PROMPT_OPTIMIZER`. Set `MINIMAX_IMAGE_SEED` to an integer for reproducible
+requests. Clothing detection still uses the OpenAI vision model.
 
 ## License
 

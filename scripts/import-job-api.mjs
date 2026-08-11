@@ -334,7 +334,7 @@ export async function miniMaxEdit({ key, baseUrl, model, prompt, images, size, a
     subjectReference.push({ type: "character", image_file: `data:image/png;base64,${normalized.toString("base64")}` });
   }
   const format = responseFormat === "url" ? "url" : "base64";
-  const payload = { model, prompt: prompt.slice(0, 1500), response_format: format };
+  const payload = { model, prompt: prompt.slice(0, 1500), response_format: format, n: 1 };
   if (subjectReference.length) payload.subject_reference = subjectReference;
   if (aspectRatio) {
     payload.aspect_ratio = aspectRatio;
@@ -355,11 +355,14 @@ export async function miniMaxEdit({ key, baseUrl, model, prompt, images, size, a
   if (typeof statusCode === "number" && statusCode !== 0) {
     throw new Error(result.base_resp?.status_msg || `MiniMax image request failed (status ${statusCode})`);
   }
-  const encoded = result.data?.image_base64?.[0];
-  if (encoded) return Buffer.from(encoded, "base64");
-  const imageUrl = result.data?.image_urls?.[0];
-  if (imageUrl) {
-    const download = await fetch(imageUrl);
+  const image = result.data?.image_urls?.[0];
+  if (typeof image === "string" && image) {
+    if (format === "base64") {
+      const comma = image.indexOf(",");
+      const encoded = image.startsWith("data:") && comma !== -1 ? image.slice(comma + 1) : image;
+      return Buffer.from(encoded, "base64");
+    }
+    const download = await fetch(image);
     if (!download.ok) throw new Error(`MiniMax image download failed (${download.status})`);
     return Buffer.from(await download.arrayBuffer());
   }
@@ -404,6 +407,7 @@ export function wardrobeImportApi(options = {}) {
       const key = setting("MINIMAX_API_KEY");
       if (!key) throw new Error("MINIMAX_API_KEY is not configured");
       const model = setting(stage === "garment" ? "MINIMAX_GARMENT_MODEL" : "MINIMAX_MODELED_MODEL", setting("MINIMAX_IMAGE_MODEL", "image-01"));
+      const seedValue = setting("MINIMAX_IMAGE_SEED").trim();
       return miniMaxEdit({
         key,
         baseUrl: miniMaxBaseUrl(),
@@ -414,6 +418,7 @@ export function wardrobeImportApi(options = {}) {
         aspectRatio: setting("MINIMAX_IMAGE_ASPECT_RATIO"),
         responseFormat: setting("MINIMAX_IMAGE_RESPONSE_FORMAT", "base64"),
         promptOptimizer: setting("MINIMAX_PROMPT_OPTIMIZER") === "true",
+        seed: /^-?\d+$/.test(seedValue) ? Number(seedValue) : undefined,
       });
     }
     const key = setting("OPENAI_API_KEY");
