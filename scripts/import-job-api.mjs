@@ -318,6 +318,59 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
   return Buffer.from(encoded, "base64");
 }
 
+function miniMaxDimensions(size) {
+  const match = /^(\d+)x(\d+)$/.exec(typeof size === "string" ? size.trim() : "");
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const supported = (value) => Number.isInteger(value) && value >= 512 && value <= 2048 && value % 8 === 0;
+  return supported(width) && supported(height) ? { width, height } : null;
+}
+
+export async function miniMaxEdit({ key, baseUrl, model, prompt, images, size, aspectRatio, responseFormat, promptOptimizer, seed }) {
+  const subjectReference = [];
+  for (const image of images) {
+    const normalized = await normalizeImage(image.data);
+    subjectReference.push({ type: "character", image_file: `data:image/png;base64,${normalized.toString("base64")}` });
+  }
+  const format = responseFormat === "url" ? "url" : "base64";
+  const payload = { model, prompt: prompt.slice(0, 1500), response_format: format, n: 1 };
+  if (subjectReference.length) payload.subject_reference = subjectReference;
+  if (aspectRatio) {
+    payload.aspect_ratio = aspectRatio;
+  } else {
+    const dimensions = miniMaxDimensions(size);
+    if (dimensions) { payload.width = dimensions.width; payload.height = dimensions.height; }
+  }
+  if (promptOptimizer) payload.prompt_optimizer = true;
+  if (Number.isInteger(seed)) payload.seed = seed;
+  const response = await fetch(`${baseUrl}/image_generation`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.base_resp?.status_msg || `MiniMax image request failed (${response.status})`);
+  const statusCode = result.base_resp?.status_code;
+  if (typeof statusCode === "number" && statusCode !== 0) {
+    throw new Error(result.base_resp?.status_msg || `MiniMax image request failed (status ${statusCode})`);
+  }
+  const image = format === "base64"
+    ? result.data?.image_base64?.[0] ?? result.data?.image_urls?.[0]
+    : result.data?.image_urls?.[0];
+  if (typeof image === "string" && image) {
+    if (format === "base64") {
+      const comma = image.indexOf(",");
+      const encoded = image.startsWith("data:") && comma !== -1 ? image.slice(comma + 1) : image;
+      return Buffer.from(encoded, "base64");
+    }
+    const download = await fetch(image);
+    if (!download.ok) throw new Error(`MiniMax image download failed (${download.status})`);
+    return Buffer.from(await download.arrayBuffer());
+  }
+  throw new Error("MiniMax response did not contain image data");
+}
+
 async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
   const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",
@@ -348,6 +401,33 @@ export function wardrobeImportApi(options = {}) {
   const running = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
+  const imageProvider = () => setting("WARDROBE_IMAGE_PROVIDER", "openai").trim().toLowerCase() || "openai";
+  const miniMaxBaseUrl = () => setting("MINIMAX_API_BASE_URL", "https://api.minimax.io/v1").replace(/\/$/, "");
+
+  async function editImage({ stage, prompt, images, size }) {
+    if (imageProvider() === "minimax") {
+      const key = setting("MINIMAX_API_KEY");
+      if (!key) throw new Error("MINIMAX_API_KEY is not configured");
+      const model = setting(stage === "garment" ? "MINIMAX_GARMENT_MODEL" : "MINIMAX_MODELED_MODEL", setting("MINIMAX_IMAGE_MODEL", "image-01"));
+      const seedValue = setting("MINIMAX_IMAGE_SEED").trim();
+      return miniMaxEdit({
+        key,
+        baseUrl: miniMaxBaseUrl(),
+        model,
+        prompt,
+        images,
+        size,
+        aspectRatio: setting("MINIMAX_IMAGE_ASPECT_RATIO"),
+        responseFormat: setting("MINIMAX_IMAGE_RESPONSE_FORMAT", "base64"),
+        promptOptimizer: setting("MINIMAX_PROMPT_OPTIMIZER") === "true",
+        seed: /^-?\d+$/.test(seedValue) ? Number(seedValue) : undefined,
+      });
+    }
+    const key = setting("OPENAI_API_KEY");
+    if (!key) throw new Error("OPENAI_API_KEY is not configured");
+    const model = setting(stage === "garment" ? "OPENAI_GARMENT_MODEL" : "OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2"));
+    return openAIEdit({ key, baseUrl: apiBaseUrl(), model, quality: setting("OPENAI_IMAGE_QUALITY", "high"), size, images, prompt });
+  }
 
   async function setupStatus() {
     const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
@@ -434,15 +514,13 @@ export function wardrobeImportApi(options = {}) {
       try {
         const dir = path.join(jobsDir, current.id);
         const output = path.join(dir, `${stageName}-${stage.attempts}.png`);
-        const key = setting("OPENAI_API_KEY");
-        if (!key) throw new Error("OPENAI_API_KEY is not configured");
         const sourceFile = stageName === "garment" && current.internal.cropFile ? current.internal.cropFile : current.internal.originalFile;
         const original = { data: await readFile(path.join(dir, sourceFile)), mime: "image/png", name: sourceFile };
         let bytes;
         if (stageName === "garment") {
           chromaKeyUsed = chooseChromaKey(current.metadata.color);
           const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
+          bytes = await editImage({ stage: "garment", size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
           const rawName = `${stageName}-${stage.attempts}-source.png`;
           await writeFile(path.join(dir, rawName), bytes);
           failedAssetUrl = `${ASSET_ROOT}/${current.id}/${rawName}`;
@@ -463,7 +541,7 @@ export function wardrobeImportApi(options = {}) {
           }
           const model = { data: modelData, mime: "image/png", name: "model.png" };
           const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
+          bytes = await editImage({ stage: "modeled", size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
