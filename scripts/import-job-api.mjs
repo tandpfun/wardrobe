@@ -355,7 +355,9 @@ export async function miniMaxEdit({ key, baseUrl, model, prompt, images, size, a
   if (typeof statusCode === "number" && statusCode !== 0) {
     throw new Error(result.base_resp?.status_msg || `MiniMax image request failed (status ${statusCode})`);
   }
-  const image = result.data?.image_urls?.[0];
+  const image = format === "base64"
+    ? result.data?.image_base64?.[0] ?? result.data?.image_urls?.[0]
+    : result.data?.image_urls?.[0];
   if (typeof image === "string" && image) {
     if (format === "base64") {
       const comma = image.indexOf(",");

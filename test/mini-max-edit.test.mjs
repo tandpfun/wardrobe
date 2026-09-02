@@ -7,14 +7,14 @@ const inputPng = await sharp({
   create: { width: 1, height: 1, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } },
 }).png().toBuffer();
 
-test("decodes a MiniMax base64 response from data.image_urls", async (t) => {
+test("decodes a MiniMax base64 response from data.image_base64", async (t) => {
   const output = Buffer.from("generated image");
   let request;
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   globalThis.fetch = async (url, options) => {
     request = { url, options };
-    return Response.json({ base_resp: { status_code: 0 }, data: { image_urls: [output.toString("base64")] } });
+    return Response.json({ base_resp: { status_code: 0 }, data: { image_base64: [output.toString("base64")] } });
   };
 
   const result = await miniMaxEdit({
