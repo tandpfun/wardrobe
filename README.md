@@ -7,7 +7,7 @@ Your clothes, extracted and organized with gpt-image.
 [![License: MIT](https://img.shields.io/badge/license-MIT-191919?style=flat-square)](LICENSE)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-191919?style=flat-square)](package.json)
 
-[See the original post →](https://x.com/cdngdev/status/2076812846793650485)
+[See the original post →](https://x.com/thijs/status/2076812846793650485)
 
 </div>
 
