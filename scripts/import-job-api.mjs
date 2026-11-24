@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 
@@ -296,7 +296,38 @@ function stageState() {
   return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
 }
 
-async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
+// USD per 1M tokens — update to match https://platform.openai.com/pricing for your account.
+// Longest matching prefix wins, so dated snapshots (e.g. gpt-image-2-2026-01-01) resolve too.
+const PRICING = {
+  "gpt-image-2": { input: 5, imageInput: 10, output: 40 },
+  "gpt-5.4-mini": { input: 0.25, imageInput: 0.25, output: 2 },
+};
+
+export function computeCost(model = "", usage) {
+  const prefix = Object.keys(PRICING).filter((name) => model.startsWith(name)).sort((a, b) => b.length - a.length)[0];
+  if (!prefix || !usage) return null;
+  const rates = PRICING[prefix];
+  const imageTokens = usage.input_tokens_details?.image_tokens || 0;
+  const textTokens = Math.max(0, (usage.input_tokens || 0) - imageTokens);
+  return (textTokens * rates.input + imageTokens * (rates.imageInput ?? rates.input) + (usage.output_tokens || 0) * rates.output) / 1e6;
+}
+
+// ponytail: module-level so the two OpenAI helpers can log without plumbing; one plugin instance per process.
+let usageFile = null;
+
+function recordUsage(entry) {
+  if (!usageFile) return;
+  const record = { at: new Date().toISOString(), ...entry, cost: computeCost(entry.model, entry.usage) };
+  appendFile(usageFile, `${JSON.stringify(record)}\n`).catch(() => {});
+}
+
+async function readUsage() {
+  if (!usageFile) return [];
+  const raw = await readFile(usageFile, "utf8").catch(() => "");
+  return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
+async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality, label }) {
   const form = new FormData();
   form.set("model", model);
   form.set("prompt", prompt);
@@ -312,6 +343,7 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
     method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form,
   });
   const result = await response.json().catch(() => ({}));
+  if (result.usage) recordUsage({ endpoint: "images/edits", label, model, usage: result.usage });
   if (!response.ok) throw new Error(result.error?.message || `OpenAI image request failed (${response.status})`);
   const encoded = result.data?.[0]?.b64_json;
   if (!encoded) throw new Error("OpenAI response did not contain image data");
@@ -332,6 +364,7 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
     }),
   });
   const result = await response.json().catch(() => ({}));
+  if (result.usage) recordUsage({ endpoint: "responses", label: "analyze", model, usage: result.usage });
   if (!response.ok) throw new Error(result.error?.message || `OpenAI analysis failed (${response.status})`);
   const outputText = result.output_text || result.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
   if (!outputText) throw new Error("OpenAI analysis returned no structured result");
@@ -442,7 +475,7 @@ export function wardrobeImportApi(options = {}) {
         if (stageName === "garment") {
           chromaKeyUsed = chooseChromaKey(current.metadata.color);
           const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", label: "garment", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
           const rawName = `${stageName}-${stage.attempts}-source.png`;
           await writeFile(path.join(dir, rawName), bytes);
           failedAssetUrl = `${ASSET_ROOT}/${current.id}/${rawName}`;
@@ -463,7 +496,7 @@ export function wardrobeImportApi(options = {}) {
           }
           const model = { data: modelData, mime: "image/png", name: "model.png" };
           const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", label: "modeled", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
@@ -496,6 +529,28 @@ export function wardrobeImportApi(options = {}) {
       }
       if (url.pathname === "/api/import/config" && req.method === "GET") {
         return json(res, 200, await setupStatus());
+      }
+      if (url.pathname === "/api/import/usage" && req.method === "GET") {
+        const entries = await readUsage();
+        const summarize = (keyOf) => {
+          const groups = {};
+          for (const entry of entries) {
+            const bucket = groups[keyOf(entry)] ||= { calls: 0, inputTokens: 0, outputTokens: 0, cost: 0, unpricedCalls: 0 };
+            bucket.calls += 1;
+            bucket.inputTokens += entry.usage?.input_tokens || 0;
+            bucket.outputTokens += entry.usage?.output_tokens || 0;
+            if (entry.cost === null) bucket.unpricedCalls += 1;
+            else bucket.cost += entry.cost;
+          }
+          return groups;
+        };
+        return json(res, 200, {
+          totalCost: entries.reduce((total, entry) => total + (entry.cost || 0), 0),
+          totalCalls: entries.length,
+          byModel: summarize((entry) => entry.model),
+          byLabel: summarize((entry) => entry.label || "unknown"),
+          recent: entries.slice(-50),
+        });
       }
       const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
@@ -669,6 +724,7 @@ export function wardrobeImportApi(options = {}) {
       const dataDir = path.resolve(root, setting("WARDROBE_DATA_DIR", "data"));
       jobsDir = path.join(dataDir, "jobs");
       importedFile = path.join(dataDir, "library.json");
+      usageFile = path.join(dataDir, "usage-log.jsonl");
       libraryAssetDir = path.join(dataDir, "imported");
       await mkdir(jobsDir, { recursive: true });
       await mkdir(libraryAssetDir, { recursive: true });

@@ -63,6 +63,10 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 | `OPENAI_VISION_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-2` |
 | `OPENAI_IMAGE_QUALITY` | `high` |
+
+### Cost tracking
+
+Every OpenAI call is logged with its token usage and computed cost to `data/usage-log.jsonl`. `GET /api/import/usage` returns the running total plus breakdowns by model and stage (`analyze`, `garment`, `modeled`). Prices live in the `PRICING` table in `scripts/import-job-api.mjs` — update them to match your account; calls for unpriced models are still logged with `cost: null`.
 | `WARDROBE_MODEL_REFERENCE` | `data/model-reference.png` |
 | `WARDROBE_DATA_DIR` | `data` |
 
