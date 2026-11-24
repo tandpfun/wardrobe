@@ -1,7 +1,8 @@
 import { forwardRef } from "react";
 import { Image } from "@unpic/react";
+import { apiUrl } from "./api.js";
 
-const IPX_OPTIONS = { ipx: { baseURL: "/_ipx" } };
+const IPX_OPTIONS = { ipx: { baseURL: apiUrl("/_ipx") } };
 const DEFAULT_BREAKPOINTS = [160, 240, 320, 480, 640, 800, 960, 1280];
 
 function sourcePath(src) {
@@ -23,7 +24,7 @@ export const OptimizedImage = forwardRef(function OptimizedImage({
   const normalizedSource = sourcePath(src);
 
   if (!normalizedSource || normalizedSource.startsWith("data:") || normalizedSource.startsWith("blob:") || normalizedSource.startsWith("/api/")) {
-    return <img ref={ref} src={src} alt={alt} sizes={sizes} loading={loading || (priority ? "eager" : "lazy")} decoding={decoding || "async"} {...props} />;
+    return <img ref={ref} src={apiUrl(src)} alt={alt} sizes={sizes} loading={loading || (priority ? "eager" : "lazy")} decoding={decoding || "async"} {...props} />;
   }
 
   return (

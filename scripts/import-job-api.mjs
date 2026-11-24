@@ -1,15 +1,46 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import sharp from "sharp";
+import { atomicJson } from "./fs-utils.mjs";
+import {
+  composeOutfitPreview,
+  createOutfit,
+  deleteOutfit,
+  getOutfit,
+  listOutfits,
+  outfitPaths,
+  readOutfitsFile,
+  updateOutfit,
+  writeOutfitsFile,
+} from "./outfits-store.mjs";
+import {
+  DECISIONS,
+  DEFAULT_MODELED_PROMPT,
+  STAGES,
+  buildGarmentPrompt,
+  buildOutfitPrompt,
+  chooseChromaKey,
+  cleanupTolerance,
+  cropDetectedItem,
+  decodeImage,
+  frameTransparentGarment,
+  normalizeImage,
+  normalizeMetadata,
+  openAIAnalyze,
+  openAIEdit,
+  processChromaBackground,
+  removeChromaBackground,
+  stageState,
+} from "./wardrobe-core.mjs";
+
+// Re-exported so existing tests (tests/import-pipeline.test.mjs) and any other
+// importers continue to resolve these from this module after the extraction of
+// the shared pipeline into wardrobe-core.mjs.
+export { buildGarmentPrompt, frameTransparentGarment, processChromaBackground, removeChromaBackground };
 
 const API_ROOT = "/api/import/jobs";
 const ASSET_ROOT = "/api/import/assets";
 const LIBRARY_ASSET_ROOT = "/api/import/library";
-const STAGES = new Set(["crop", "garment", "modeled"]);
-const DECISIONS = new Set(["approve", "reject"]);
-const PARTS = new Set(["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"]);
-const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 function json(res, status, value) {
   res.statusCode = status;
@@ -37,315 +68,14 @@ function publicJob(job) {
   return copy;
 }
 
-function extension(mime = "image/png") {
-  return ({ "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" })[mime] || "png";
-}
-
-function decodeImage(input) {
-  const raw = input.imageDataUrl || input.imageBase64;
-  if (!raw || typeof raw !== "string") throw Object.assign(new Error("imageDataUrl or imageBase64 is required"), { status: 400 });
-  const match = raw.match(/^data:([^;]+);base64,(.+)$/s);
-  const mime = match?.[1] || input.mimeType || "image/png";
-  const data = Buffer.from(match?.[2] || raw, "base64");
-  if (!data.length) throw Object.assign(new Error("Image payload is empty"), { status: 400 });
-  return { data, mime };
-}
-
-function normalizeMetadata(value = {}) {
-  const metadata = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const color = typeof metadata.color === "string" && HEX_COLOR.test(metadata.color) ? metadata.color.toLowerCase() : "#d8d0c2";
-  const secondaryColor = typeof metadata.secondaryColor === "string" && HEX_COLOR.test(metadata.secondaryColor) ? metadata.secondaryColor.toLowerCase() : null;
-  return {
-    name: typeof metadata.name === "string" ? metadata.name.trim().slice(0, 120) || "New piece" : "New piece",
-    part: PARTS.has(metadata.part) ? metadata.part : "upperbody",
-    color,
-    secondaryColor,
-    tags: Array.isArray(metadata.tags) ? metadata.tags.filter((tag) => typeof tag === "string").map((tag) => tag.trim().toLowerCase().slice(0, 40)).filter(Boolean).slice(0, 12) : [],
-    boundingBox: normalizeBoundingBox(metadata.boundingBox),
-  };
-}
-
-function normalizeBoundingBox(value = {}) {
-  const box = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const number = (key, fallback) => Number.isFinite(Number(box[key])) ? Math.round(Number(box[key])) : fallback;
-  const x = Math.max(0, Math.min(999, number("x", 0)));
-  const y = Math.max(0, Math.min(999, number("y", 0)));
-  const width = Math.max(1, Math.min(1000 - x, number("width", 1000 - x)));
-  const height = Math.max(1, Math.min(1000 - y, number("height", 1000 - y)));
-  return { x, y, width, height };
-}
-
-async function normalizeImage(bytes) {
-  return sharp(bytes).rotate().toColorspace("srgb").png().toBuffer();
-}
-
-async function cropDetectedItem(bytes, boundingBox) {
-  const normalized = await normalizeImage(bytes);
-  const { width, height } = await sharp(normalized).metadata();
-  const box = normalizeBoundingBox(boundingBox);
-  const rawLeft = (box.x / 1000) * width;
-  const rawTop = (box.y / 1000) * height;
-  const rawWidth = (box.width / 1000) * width;
-  const rawHeight = (box.height / 1000) * height;
-  const padding = Math.max(12, Math.round(Math.max(rawWidth, rawHeight) * 0.08));
-  const left = Math.max(0, Math.floor(rawLeft - padding));
-  const top = Math.max(0, Math.floor(rawTop - padding));
-  const right = Math.min(width, Math.ceil(rawLeft + rawWidth + padding));
-  const bottom = Math.min(height, Math.ceil(rawTop + rawHeight + padding));
-  return sharp(normalized).extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) }).png().toBuffer();
-}
-
-function chooseChromaKey(primary = "#808080") {
-  const value = HEX_COLOR.test(primary) ? primary : "#808080";
-  const source = [1, 3, 5].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16));
-  const candidates = [[0, 255, 0], [255, 0, 255], [0, 255, 255]];
-  const selected = candidates.sort((a, b) => {
-    const distance = (color) => color.reduce((total, channel, index) => total + ((channel - source[index]) ** 2), 0);
-    return distance(b) - distance(a);
-  })[0];
-  return `#${selected.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
-}
-
-export function buildGarmentPrompt(metadata = {}, chromaKey = "#00ff00") {
-  const name = metadata.name || "clothing item";
-  const category = metadata.part || "wardrobe item";
-  const primary = metadata.color || "the exact visible color";
-  const secondary = metadata.secondaryColor ? ` with distinct secondary color ${metadata.secondaryColor}` : "";
-  const details = Array.isArray(metadata.tags) && metadata.tags.length
-    ? metadata.tags.join(", ")
-    : "all visible construction and design details";
-
-  return `Use case: background-extraction
-Asset type: ecommerce catalog product cutout source
-
-Input image: The reference photograph shows the exact garment, either by itself or worn by a person. Use it only to identify and reconstruct the garment.
-
-Primary request: Reconstruct ONLY the complete empty ${name} (${category}) as a clean, front-facing ecommerce catalog product photograph. If a wearer is present, remove them. Remove every other garment, object, and background element. Show the complete item naturally arranged and symmetrical, with no person, body, mannequin, or hanger visible.
-
-Garment fidelity: Preserve the reference garment's exact primary color ${primary}${secondary}, material and texture, silhouette, neckline, sleeves, fastenings, pattern, and distinctive details (${details}). Preserve any clearly legible existing graphic or logo exactly, but do not invent or reinterpret uncertain logos, text, pockets, seams, hardware, colors, or decoration.
-
-Composition: Centered straight-on product view. Keep the entire garment inside the frame with generous, even padding on every side. No cropping or truncation.
-
-Background: Perfectly flat, absolutely uniform solid ${chromaKey} chroma-key color, edge-to-edge. No shadows, gradient, texture, vignette, floor, horizon, reflection, or lighting variation.
-
-Lighting: Neutral diffuse product lighting contained on the garment only.
-
-Avoid: person, body, skin, hair, mannequin, hanger, props, other garments, retail tags, cast shadow, contact shadow, reflection, watermark, caption, border, background variation, or chroma spill.
-
-Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one complete garment with a crisp, separable outer silhouette.`;
-}
-
-function cleanupTolerance(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.max(18, Math.min(110, Math.round(parsed))) : 46;
-}
-
-function removeKeyedSpill(data, index, keyedChannels, neutralLevel) {
-  let remaining = Math.ceil(keyedChannels.reduce((total, channel) => total + data[index + channel], 0) - (neutralLevel * keyedChannels.length));
-  let active = keyedChannels.filter((channel) => data[index + channel] > 0);
-  while (remaining > 0 && active.length) {
-    const share = Math.ceil(remaining / active.length);
-    const next = [];
-    for (const channel of active) {
-      const reduction = Math.min(data[index + channel], share, remaining);
-      data[index + channel] -= reduction;
-      remaining -= reduction;
-      if (data[index + channel] > 0) next.push(channel);
-    }
-    active = next;
-  }
-}
-
-export async function processChromaBackground(bytes, key, options = {}) {
-  const tolerance = cleanupTolerance(options.tolerance);
-  const feather = 80;
-  const target = [1, 3, 5].map((offset) => Number.parseInt(key.slice(offset, offset + 2), 16));
-  const keyedChannels = target.map((channel, index) => channel > 200 ? index : null).filter((index) => index !== null);
-  const neutralChannels = target.map((channel, index) => channel < 55 ? index : null).filter((index) => index !== null);
-  const { data, info } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  for (let index = 0; index < data.length; index += 4) {
-    const distance = Math.sqrt(
-      ((data[index] - target[0]) ** 2)
-      + ((data[index + 1] - target[1]) ** 2)
-      + ((data[index + 2] - target[2]) ** 2),
-    );
-    if (distance <= tolerance) {
-      data[index] = 0;
-      data[index + 1] = 0;
-      data[index + 2] = 0;
-      data[index + 3] = 0;
-    } else {
-      if (distance < tolerance + feather) data[index + 3] = Math.round(data[index + 3] * ((distance - tolerance) / feather));
-      const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
-      const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
-      const spill = Math.max(0, keyedLevel - neutralLevel);
-      if (spill > 0) {
-        const spillAlpha = Math.max(0, 1 - (Math.max(0, spill - 4) / 150));
-        data[index + 3] = Math.round(data[index + 3] * spillAlpha);
-        removeKeyedSpill(data, index, keyedChannels, neutralLevel);
-      }
-      if (data[index + 3] <= 8) {
-        data[index] = 0;
-        data[index + 1] = 0;
-        data[index + 2] = 0;
-        data[index + 3] = 0;
-      }
-    }
-  }
-  for (let index = 0; index < data.length; index += 4) {
-    if (data[index + 3] === 0) continue;
-    const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
-    const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
-    const residualSpill = Math.max(0, keyedLevel - neutralLevel);
-    if (residualSpill > 0) {
-      removeKeyedSpill(data, index, keyedChannels, neutralLevel);
-    }
-  }
-  const keyedOutput = await sharp(data, { raw: info }).png().toBuffer();
-  const framedOutput = await frameTransparentGarment(keyedOutput);
-  const { data: framedData, info: framedInfo } = await sharp(framedOutput).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  for (let index = 0; index < framedData.length; index += 4) {
-    if (framedData[index + 3] === 0) continue;
-    const keyedLevel = keyedChannels.reduce((total, channel) => total + framedData[index + channel], 0) / keyedChannels.length;
-    const neutralLevel = neutralChannels.reduce((total, channel) => total + framedData[index + channel], 0) / neutralChannels.length;
-    const residualSpill = Math.max(0, keyedLevel - neutralLevel);
-    if (residualSpill <= 0) continue;
-    removeKeyedSpill(framedData, index, keyedChannels, neutralLevel);
-  }
-  const output = await sharp(framedData, { raw: framedInfo }).png().toBuffer();
-  const verification = await verifyNoChromaSpill(output, key);
-  return { bytes: output, verification, tolerance };
-}
-
-export async function removeChromaBackground(bytes, key, options = {}) {
-  const result = await processChromaBackground(bytes, key, options);
-  if (options.strict !== false && result.verification.contaminatedPixels > 1) {
-    throw new Error(`Background cleanup left ${result.verification.contaminatedPixels} chroma-contaminated pixels`);
-  }
-  return result.bytes;
-}
-
-export async function frameTransparentGarment(bytes, canvasSize = 1024, occupancy = 0.88) {
-  const { data, info } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  let minX = info.width;
-  let minY = info.height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
-    if (data[index + 3] <= 8) continue;
-    const x = pixel % info.width;
-    const y = Math.floor(pixel / info.width);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  if (maxX < minX || maxY < minY) throw new Error("Background removal did not leave a visible garment");
-
-  const trimmed = await sharp(data, { raw: info })
-    .extract({ left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 })
-    .png()
-    .toBuffer();
-  const targetSize = Math.max(1, Math.round(canvasSize * Math.max(0.5, Math.min(0.96, occupancy))));
-  const resized = await sharp(trimmed)
-    .resize(targetSize, targetSize, { fit: "inside", withoutEnlargement: false })
-    .png()
-    .toBuffer({ resolveWithObject: true });
-  const left = Math.floor((canvasSize - resized.info.width) / 2);
-  const top = Math.floor((canvasSize - resized.info.height) / 2);
-  return sharp({ create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
-    .composite([{ input: resized.data, left, top }])
-    .png()
-    .toBuffer();
-}
-
-async function verifyNoChromaSpill(bytes, key) {
-  const target = [1, 3, 5].map((offset) => Number.parseInt(key.slice(offset, offset + 2), 16));
-  const keyedChannels = target.map((channel, index) => channel > 200 ? index : null).filter((index) => index !== null);
-  const neutralChannels = target.map((channel, index) => channel < 55 ? index : null).filter((index) => index !== null);
-  const { data } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  let contaminatedPixels = 0;
-  let maxSpill = 0;
-  for (let index = 0; index < data.length; index += 4) {
-    if (data[index + 3] === 0) continue;
-    const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
-    const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
-    const spill = Math.max(0, keyedLevel - neutralLevel);
-    maxSpill = Math.max(maxSpill, spill);
-    if (spill > 1.5) contaminatedPixels += 1;
-  }
-  return { contaminatedPixels, maxSpill };
-}
-
-async function atomicJson(file, value) {
-  const tmp = `${file}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
-  try {
-    await rename(tmp, file);
-  } catch (error) {
-    if (!["EBUSY", "EXDEV", "EPERM"].includes(error.code)) {
-      await rm(tmp, { force: true });
-      throw error;
-    }
-    await copyFile(tmp, file);
-    await rm(tmp, { force: true });
-  }
-}
-
-function stageState() {
-  return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
-}
-
-async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
-  const form = new FormData();
-  form.set("model", model);
-  form.set("prompt", prompt);
-  form.set("size", size);
-  form.set("quality", quality || "high");
-  form.set("output_format", "png");
-  if (background) form.set("background", background);
-  for (const [index, image] of images.entries()) {
-    const normalized = await normalizeImage(image.data);
-    form.append("image[]", new Blob([normalized], { type: "image/png" }), image.name?.replace(/\.[^.]+$/, ".png") || `image-${index + 1}.png`);
-  }
-  const response = await fetch(`${baseUrl}/images/edits`, {
-    method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form,
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error?.message || `OpenAI image request failed (${response.status})`);
-  const encoded = result.data?.[0]?.b64_json;
-  if (!encoded) throw new Error("OpenAI response did not contain image data");
-  return Buffer.from(encoded, "base64");
-}
-
-async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
-  const response = await fetch(`${baseUrl}/responses`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      input: [{ role: "user", content: [
-        { type: "input_text", text: "Identify every distinct wearable clothing item visible in this image. A photo may show one isolated garment or a person wearing several items. Return one record per actual item that should enter a wardrobe. Ignore the person's body and non-wearable background objects. For each item, include a tight bounding box around only that item using integer coordinates normalized to a 1000 by 1000 image: x and y are the top-left corner, followed by width and height. Boxes may overlap when garments overlap, but each box must focus on one distinct item. Use only these category ids: upperbody, wholebody_up, lowerbody, accessories_up, shoes. Suggest a concise specific name, primary hex color, optional genuinely distinct secondary hex color, and 1-4 useful lowercase detail tags." },
-        { type: "input_image", image_url: `data:${mime};base64,${image.toString("base64")}` },
-      ] }],
-      text: { format: { type: "json_schema", name: "wardrobe_items", strict: true, schema: { type: "object", additionalProperties: false, properties: { items: { type: "array", minItems: 0, maxItems: 8, items: { type: "object", additionalProperties: false, properties: { name: { type: "string" }, part: { type: "string", enum: ["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"] }, color: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" }, secondaryColor: { anyOf: [{ type: "string", pattern: "^#[0-9A-Fa-f]{6}$" }, { type: "null" }] }, tags: { type: "array", items: { type: "string" }, maxItems: 4 }, boundingBox: { type: "object", additionalProperties: false, properties: { x: { type: "integer", minimum: 0, maximum: 999 }, y: { type: "integer", minimum: 0, maximum: 999 }, width: { type: "integer", minimum: 1, maximum: 1000 }, height: { type: "integer", minimum: 1, maximum: 1000 } }, required: ["x", "y", "width", "height"] } }, required: ["name", "part", "color", "secondaryColor", "tags", "boundingBox"] } } }, required: ["items"] } } },
-    }),
-  });
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error?.message || `OpenAI analysis failed (${response.status})`);
-  const outputText = result.output_text || result.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
-  if (!outputText) throw new Error("OpenAI analysis returned no structured result");
-  const parsed = JSON.parse(outputText);
-  if (!Array.isArray(parsed.items)) throw new Error("OpenAI analysis returned an invalid clothing list");
-  return parsed.items;
-}
-
 export function wardrobeImportApi(options = {}) {
   let root;
+  let dataDir;
   let jobsDir;
   let importedFile;
   let libraryAssetDir;
   const running = new Map();
+  const runningOutfits = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
 
@@ -421,6 +151,104 @@ export function wardrobeImportApi(options = {}) {
     return record;
   }
 
+  async function updateImportedRecord(id, patch) {
+    const records = await loadImported();
+    const index = records.findIndex((record) => record.id === id);
+    if (index === -1) return null;
+    const current = records[index];
+    const metadata = normalizeMetadata({
+      name: patch.name ?? current.name,
+      part: patch.part ?? current.part,
+      color: patch.color ?? current.color,
+      secondaryColor: Object.prototype.hasOwnProperty.call(patch, "secondaryColor") ? patch.secondaryColor : current.secondaryColor,
+      tags: patch.tags ?? current.tags,
+    });
+    const updated = {
+      ...current,
+      name: metadata.name,
+      part: metadata.part,
+      color: metadata.color,
+      secondaryColor: metadata.secondaryColor,
+      tags: metadata.tags,
+      palette: [metadata.color, metadata.secondaryColor].filter(Boolean),
+    };
+    records[index] = updated;
+    await atomicJson(importedFile, records);
+    return updated;
+  }
+
+  function localAssetPath(url) {
+    if (typeof url !== "string" || !url) return null;
+    const pathname = new URL(url, "http://localhost").pathname;
+    const libraryMatch = pathname.match(/^\/api\/import\/library\/([\w.-]+)$/i);
+    if (libraryMatch) return path.join(libraryAssetDir, path.basename(libraryMatch[1]));
+    return null;
+  }
+
+  async function resolveOutfitGarments(garmentIds) {
+    const records = await loadImported();
+    const buffers = [];
+    for (const id of garmentIds) {
+      const record = records.find((item) => item.id === id);
+      const assetPath = record && localAssetPath(record.image || record.thumbnail);
+      if (!assetPath) continue;
+      try {
+        buffers.push({ record, data: await readFile(assetPath) });
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    return buffers;
+  }
+
+  async function runOutfitGeneration(id) {
+    const publicOutfit = await getOutfit(dataDir, id);
+    if (!publicOutfit) return;
+    const garments = await resolveOutfitGarments(publicOutfit.garmentIds);
+    if (!garments.length) {
+      await updateOutfit(dataDir, id, { status: "failed", error: "None of this outfit's garments have local images. Add garments before generating." });
+      return;
+    }
+    const setup = await setupStatus();
+    const { imageDir } = outfitPaths(dataDir);
+    await mkdir(imageDir, { recursive: true });
+    const output = path.join(imageDir, `${id}.png`);
+    try {
+      let bytes;
+      let imageMode;
+      if (setup.ready) {
+        imageMode = "openai";
+        const key = setting("OPENAI_API_KEY");
+        const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
+        const model = { data: await readFile(modelPath), mime: "image/png", name: "model.png" };
+        const images = [model, ...garments.slice(0, 5).map((garment, index) => ({ data: garment.data, mime: "image/png", name: `garment-${index + 1}.png` }))];
+        bytes = await openAIEdit({
+          key,
+          baseUrl: apiBaseUrl(),
+          model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")),
+          quality: setting("OPENAI_IMAGE_QUALITY", "high"),
+          size: "1024x1024",
+          images,
+          prompt: buildOutfitPrompt(publicOutfit, garments),
+        });
+      } else {
+        imageMode = "demo";
+        bytes = await composeOutfitPreview(garments.map((garment) => garment.data));
+      }
+      await writeFile(output, bytes);
+      await updateOutfit(dataDir, id, { status: "ready", imageMode, error: null });
+    } catch (error) {
+      await updateOutfit(dataDir, id, { status: "failed", error: error.message });
+    }
+  }
+
+  function generateOutfit(id) {
+    if (runningOutfits.has(id)) return runningOutfits.get(id);
+    const task = runOutfitGeneration(id).finally(() => runningOutfits.delete(id));
+    runningOutfits.set(id, task);
+    return task;
+  }
+
   async function generate(job, stageName) {
     const lock = `${job.id}:${stageName}`;
     if (running.has(lock)) return running.get(lock);
@@ -462,7 +290,7 @@ export function wardrobeImportApi(options = {}) {
             throw error;
           }
           const model = { data: modelData, mime: "image/png", name: "model.png" };
-          const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
+          const basePrompt = options.modeledPrompt || DEFAULT_MODELED_PROMPT;
           bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
@@ -497,7 +325,7 @@ export function wardrobeImportApi(options = {}) {
       if (url.pathname === "/api/import/config" && req.method === "GET") {
         return json(res, 200, await setupStatus());
       }
-      const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
+      const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-z0-9][a-z0-9-]*)$/i);
       if (wardrobeDeleteMatch && req.method === "DELETE") {
         const id = wardrobeDeleteMatch[1];
         const records = await loadImported();
@@ -509,6 +337,60 @@ export function wardrobeImportApi(options = {}) {
           rm(path.join(libraryAssetDir, `${id}-modeled.png`), { force: true }),
         ]);
         return json(res, 200, { deleted: true, id });
+      }
+      const wardrobeUpdateMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-z0-9][a-z0-9-]*)$/i);
+      if (wardrobeUpdateMatch && (req.method === "PATCH" || req.method === "PUT")) {
+        const input = await body(req);
+        const patch = input.metadata && typeof input.metadata === "object" ? input.metadata : input;
+        const updated = await updateImportedRecord(wardrobeUpdateMatch[1], patch);
+        if (!updated) return json(res, 404, { error: "Imported wardrobe item not found" });
+        return json(res, 200, updated);
+      }
+      if (url.pathname === "/api/import/outfits" && req.method === "GET") {
+        return json(res, 200, await listOutfits(dataDir));
+      }
+      if (url.pathname === "/api/import/outfits" && req.method === "POST") {
+        const input = await body(req);
+        if (!Array.isArray(input.garmentIds) || input.garmentIds.length === 0) {
+          throw Object.assign(new Error("Select at least one garment for the outfit."), { status: 400 });
+        }
+        const outfit = await createOutfit(dataDir, input);
+        return json(res, 201, outfit);
+      }
+      const outfitImageMatch = url.pathname.match(/^\/api\/import\/outfits\/([a-z0-9][a-z0-9-]*)\.png$/i);
+      if (outfitImageMatch && req.method === "GET") {
+        const { imageDir } = outfitPaths(dataDir);
+        const file = path.join(imageDir, `${path.basename(outfitImageMatch[1])}.png`);
+        await stat(file);
+        res.setHeader("Content-Type", "image/png");
+        res.setHeader("Cache-Control", "no-store");
+        return res.end(await readFile(file));
+      }
+      const outfitMatch = url.pathname.match(/^\/api\/import\/outfits\/([a-z0-9][a-z0-9-]*)(?:\/(generate))?$/i);
+      if (outfitMatch) {
+        const id = outfitMatch[1];
+        const outfitAction = outfitMatch[2];
+        if (!outfitAction && req.method === "GET") {
+          const outfit = await getOutfit(dataDir, id);
+          return outfit ? json(res, 200, outfit) : json(res, 404, { error: "Outfit not found" });
+        }
+        if (!outfitAction && (req.method === "PATCH" || req.method === "PUT")) {
+          const input = await body(req);
+          const updated = await updateOutfit(dataDir, id, input);
+          return updated ? json(res, 200, updated) : json(res, 404, { error: "Outfit not found" });
+        }
+        if (!outfitAction && req.method === "DELETE") {
+          const removed = await deleteOutfit(dataDir, id);
+          return removed ? json(res, 200, { deleted: true, id }) : json(res, 404, { error: "Outfit not found" });
+        }
+        if (outfitAction === "generate" && req.method === "POST") {
+          const existing = await getOutfit(dataDir, id);
+          if (!existing) return json(res, 404, { error: "Outfit not found" });
+          if (!existing.garmentIds.length) throw Object.assign(new Error("Add garments to this outfit before generating an image."), { status: 400 });
+          const queued = await updateOutfit(dataDir, id, { status: "generating", error: null });
+          void generateOutfit(id);
+          return json(res, 202, queued);
+        }
       }
       const libraryAssetMatch = url.pathname.match(/^\/api\/import\/library\/([\w.-]+)$/i);
       if (libraryAssetMatch && req.method === "GET") {
@@ -666,12 +548,28 @@ export function wardrobeImportApi(options = {}) {
     apply: "serve",
     async configResolved(config) {
       root = config.root;
-      const dataDir = path.resolve(root, setting("WARDROBE_DATA_DIR", "data"));
+      dataDir = path.resolve(root, setting("WARDROBE_DATA_DIR", "data"));
       jobsDir = path.join(dataDir, "jobs");
       importedFile = path.join(dataDir, "library.json");
       libraryAssetDir = path.join(dataDir, "imported");
       await mkdir(jobsDir, { recursive: true });
       await mkdir(libraryAssetDir, { recursive: true });
+      const { imageDir: outfitImageDir } = outfitPaths(dataDir);
+      await mkdir(outfitImageDir, { recursive: true });
+      // Any outfit left mid-generation when the server stopped can never
+      // resume its in-memory task, so reset it to a re-triggerable state.
+      try {
+        const outfitData = await readOutfitsFile(dataDir);
+        const stalled = outfitData.outfits.filter((outfit) => outfit.status === "generating");
+        if (stalled.length) {
+          for (const outfit of stalled) {
+            outfit.status = "draft";
+            outfit.error = null;
+            outfit.updatedAt = new Date().toISOString();
+          }
+          await writeOutfitsFile(dataDir, outfitData);
+        }
+      } catch { /* a missing or unreadable outfits file is not fatal on boot */ }
       const ids = await readdir(jobsDir).catch(() => []);
       for (const id of ids) {
         const job = await loadJob(id);
