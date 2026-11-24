@@ -2,6 +2,8 @@
 
 # Wardrobe
 
+[English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md)
+
 Your clothes, extracted and organized with gpt-image.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-191919?style=flat-square)](LICENSE)
