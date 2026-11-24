@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { wardrobeImportApi } from "./scripts/import-job-api.mjs";
 import { responsiveImageApi } from "./scripts/responsive-image-api.mjs";
+import { immichApi } from "./scripts/immich-api.mjs";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -21,6 +22,6 @@ export default defineConfig(({ mode }) => {
       port: 4173,
       allowedHosts: ["localhost"],
     },
-    plugins: [react(), responsiveImageApi(), wardrobeImportApi({ env })],
+    plugins: [react(), responsiveImageApi(), wardrobeImportApi({ env }), immichApi({ env })],
   };
 });

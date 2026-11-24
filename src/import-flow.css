@@ -130,12 +130,18 @@
   min-width: 0;
   max-width: min(240px, 42vw);
   overflow: hidden;
-  padding: 0 10px 0 4px;
+  border: 0;
+  padding: 7px 10px 7px 4px;
+  background: transparent;
+  color: inherit;
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 12px;
   letter-spacing: 0.01em;
+  cursor: pointer;
 }
+.import-tray__label:hover,
+.import-tray__label:focus-visible { color: #fff; outline: none; text-decoration: underline; text-underline-offset: 3px; }
 .import-tray__preview { width: 0; height: 34px; object-fit: contain; border-radius: 999px; background: rgba(255,255,255,.1); opacity: 0; transition: width 320ms var(--import-ease), opacity 180ms ease; }
 .import-tray:hover .import-tray__preview,
 .import-tray:focus-within .import-tray__preview,
