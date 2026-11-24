@@ -237,6 +237,11 @@
 
 .import-editor { display: grid; grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.2fr); gap: 20px; }
 .import-editor__preview { width: 100%; max-height: 360px; object-fit: contain; background: var(--import-ivory); border-radius: 16px; }
+.modeled-carousel--review { align-self: start; }
+.modeled-carousel--review .modeled-carousel__caption { left: 8px; right: 8px; bottom: 8px; justify-content: space-between; gap: 5px; padding: 7px 8px; font-size: 10px; }
+.modeled-carousel--review .modeled-carousel__arrow--previous { left: 7px; }
+.modeled-carousel--review .modeled-carousel__arrow--next { right: 7px; }
+.import-fields .layering-controls legend { font-size: 11px; letter-spacing: normal; text-transform: none; }
 .import-cleanup-editor { display: grid; gap: 14px; }
 .import-cleanup-editor > .import-card__detail { max-width: 680px; line-height: 1.45; }
 .import-cleanup-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
